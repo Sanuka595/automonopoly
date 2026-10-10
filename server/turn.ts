@@ -1,6 +1,7 @@
 import { canPay, EXTRA_STEP_COST, sub, euro } from "./money.ts";
 import { cellAt, CELL_CAP, stepCost, stepsWalked, TRACK_LEN } from "./track.ts";
 import { GARAGE_CAP, type Intent, type Player, type Room } from "./types.ts";
+import { processPlayerLoansAtTurnEnd } from "./loans.ts";
 
 export class RuleError extends Error {}
 
@@ -67,6 +68,11 @@ export const advanceTurn = (room: Room, wasAuto = false): Room => {
 
   const current = seat(room);
   let updatedCurrent = { ...current, turnCount: current.turnCount + 1 };
+
+  // Process loans for the player ending their turn
+  const loanProcessedRoom = processPlayerLoansAtTurnEnd(room, current.id);
+  const postLoanPlayer = loanProcessedRoom.players.find((p) => p.id === current.id)!;
+  updatedCurrent = { ...postLoanPlayer, turnCount: postLoanPlayer.turnCount + 1 };
 
   // Track missed turns / bankruptcy (RULES: 3 missed laps -> bankrupt)
   if (wasAuto) {
@@ -183,10 +189,40 @@ export const hasOverdueDebt = (player: Player): boolean => player.loans.some((l)
 
 /** Gate for the intents the socket layer is allowed to forward. */
 export const assertIntent = (room: Room, playerId: string, intent: Intent): void => {
+  if (room.phase.name === "auction") {
+    if (intent.type !== "bid" && intent.type !== "pass") {
+      throw new RuleError("only bid or pass allowed during auction");
+    }
+    if (room.phase.state.currentTurnPlayerId !== playerId) {
+      throw new RuleError("not your auction turn");
+    }
+    return;
+  }
+
+  if (room.phase.name === "race") {
+    if (room.phase.state.status === "invitation") {
+      if (intent.type !== "race_accept" && intent.type !== "race_forfeit") {
+        throw new RuleError("only race_accept or race_forfeit allowed during invitation");
+      }
+      if (room.phase.state.targetId !== playerId) {
+        throw new RuleError("only race target can respond");
+      }
+      return;
+    }
+    if (room.phase.state.status === "pool_entry") {
+      if (intent.type !== "race_join_pool" && intent.type !== "pass") {
+        throw new RuleError("only race_join_pool or pass allowed during pool entry");
+      }
+      return;
+    }
+  }
+
+  // General turns
   if (seat(room).id !== playerId) throw new RuleError("not your turn");
   if (intent.type === "move" && room.phase.name !== "choose_move") {
     throw new RuleError("move only in choose_move");
   }
 };
+
 
 

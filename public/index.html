@@ -256,9 +256,82 @@
         `;
       }).join("");
 
-      // Render Actions for active player
+      // Render Actions
       const actBox = document.getElementById("actions-box");
       actBox.innerHTML = "";
+
+      // AUCTION PHASE
+      if (room.phase.name === "auction") {
+        const ast = room.phase.state;
+        const isAuctionTurn = ast.currentTurnPlayerId === myId;
+        const highestBidder = room.players.find(p => p.id === ast.highestBidderId);
+
+        let info = `<div style="width:100%; margin-bottom:8px;">
+          🔨 <b>Аукцион: [${ast.car.class}]</b> (Номинал: ${ast.car.purchase}€)<br>
+          Текущая ставка: <b>${ast.highestBid} €</b> (${highestBidder ? highestBidder.name : "никто"})<br>
+          Ходит ставка: <b>${room.players.find(p => p.id === ast.currentTurnPlayerId)?.name}</b>
+        </div>`;
+        actBox.innerHTML = info;
+
+        if (isAuctionTurn) {
+          const btn100 = document.createElement("button");
+          btn100.innerText = "+100 €";
+          btn100.className = "primary";
+          btn100.onclick = () => sendIntent({ type: "bid", step: "100" });
+
+          const btn500 = document.createElement("button");
+          btn500.innerText = "+500 €";
+          btn500.className = "primary";
+          btn500.onclick = () => sendIntent({ type: "bid", step: "500" });
+
+          const btnPassA = document.createElement("button");
+          btnPassA.innerText = "Пас";
+          btnPassA.onclick = () => sendIntent({ type: "pass" });
+
+          actBox.appendChild(btn100);
+          actBox.appendChild(btn500);
+          actBox.appendChild(btnPassA);
+        }
+        return;
+      }
+
+      // RACE PHASE
+      if (room.phase.name === "race") {
+        const rst = room.phase.state;
+        let info = `<div style="width:100%; margin-bottom:8px;">
+          🏁 <b>Гонка!</b> Пул: <b>${rst.pool} €</b> (Ставка: ${rst.stake} €)<br>
+          Участники: ${rst.participants.map(id => room.players.find(p => p.id === id)?.name).join(", ")}
+        </div>`;
+        actBox.innerHTML = info;
+
+        if (rst.status === "invitation" && rst.targetId === myId) {
+          const btnAcc = document.createElement("button");
+          btnAcc.innerText = `Принять вызов (${rst.stake} €)`;
+          btnAcc.className = "primary";
+          btnAcc.onclick = () => sendIntent({ type: "race_accept" });
+
+          const btnForf = document.createElement("button");
+          btnForf.innerText = "Откупиться (штраф 200 €)";
+          btnForf.onclick = () => sendIntent({ type: "race_forfeit" });
+
+          actBox.appendChild(btnAcc);
+          actBox.appendChild(btnForf);
+        } else if (rst.status === "pool_entry" && !rst.participants.includes(myId)) {
+          const btnJoin = document.createElement("button");
+          btnJoin.innerText = `Войти в пул (${rst.stake} €)`;
+          btnJoin.className = "primary";
+          btnJoin.onclick = () => sendIntent({ type: "race_join_pool" });
+
+          const btnPassRace = document.createElement("button");
+          btnPassRace.innerText = "Пропустить";
+          btnPassRace.onclick = () => sendIntent({ type: "pass" });
+
+          actBox.appendChild(btnJoin);
+          actBox.appendChild(btnPassRace);
+        }
+        return;
+      }
+
       if (!isMyTurn || room.phase.name === "finished") {
         actBox.innerHTML = "<span style='color:#8b949e;'>Ожидание хода соперника...</span>";
         return;
@@ -304,6 +377,17 @@
           btnRent.innerText = "🏢 Сдать машины в прокат";
           btnRent.onclick = () => sendIntent({ type: "rent" });
           actBox.appendChild(btnRent);
+        } else if (cell === "race") {
+          const targets = room.players.filter(p => !p.bankrupt && p.id !== myId && p.cars.length > 0);
+          targets.forEach(tgt => {
+            const maxStake = Math.floor(Number(tgt.cash) / 2);
+            if (maxStake >= 100) {
+              const btnRace = document.createElement("button");
+              btnRace.innerText = `🏁 Вызов ${tgt.name} (ставка 500€)`;
+              btnRace.onclick = () => sendIntent({ type: "race_invite", targetId: tgt.id, stake: "500" });
+              actBox.appendChild(btnRace);
+            }
+          });
         } else if (["buckets", "beaten", "premium"].includes(cell)) {
           const deckKey = cell === "buckets" ? "bucket" : cell;
           const openCar = room.decks[deckKey]?.[0];

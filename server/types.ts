@@ -46,13 +46,29 @@ export type Player = {
   turnCount: number;
 };
 
+export type AuctionState = {
+  car: Car;
+  highestBid: Euro;
+  highestBidderId: string | null;
+  currentTurnPlayerId: string;
+  activePlayerIds: string[]; // players still in the auction
+};
+
+export type RaceState = {
+  initiatorId: string;
+  targetId: string;
+  stake: Euro;
+  pool: Euro; // initiator stake + target stake + 1000 bank bonus + pool joiners
+  status: "invitation" | "pool_entry" | "rolling";
+  participants: string[]; // users who entered the pool
+};
+
 export type Phase =
   | { name: "lobby" }
   | { name: "choose_move" }
   | { name: "resolve_cell"; cell: Cell }
-  | { name: "auction" }
-  | { name: "race" }
-  | { name: "loan_offer" }
+  | { name: "auction"; state: AuctionState }
+  | { name: "race"; state: RaceState }
   | { name: "end_turn" }
   | { name: "finished"; winnerId: string };
 
@@ -72,9 +88,15 @@ export type Intent =
   | { type: "repair"; carId: string }
   | { type: "rent" }
   | { type: "race_invite"; targetId: string; stake: Euro }
+  | { type: "race_accept" }
+  | { type: "race_forfeit" }
+  | { type: "race_join_pool" }
   | { type: "bid"; step: Euro }
   | { type: "pass" }
-  | { type: "taxi"; carId: string };
+  | { type: "taxi"; carId: string }
+  | { type: "loan_offer"; targetId: string; principal: Euro; due: Euro; turns: number }
+  | { type: "loan_accept"; loanId: string };
+
 
 export const GARAGE_CAP = 3;
 export const MIN_PLAYERS = 3;

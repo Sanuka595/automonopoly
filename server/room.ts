@@ -6,6 +6,9 @@ import { applyBuy, applyBuyout, applyRent, applyRepair, applyTaxi } from "./acti
 import { d6 } from "./rng.ts";
 import { saveRoom, serializeRoom } from "./snapshot.ts";
 import { advanceTurn, applyAutoTurn, applyMove, assertIntent, RuleError, TURN_TIMEOUT_SEC, DISCONNECT_TIMEOUT_SEC, DISCONNECT_GRACE_SEC } from "./turn.ts";
+import { applyBid, applyAuctionPass, startAuction, AUCTION_TIMEOUT_SEC } from "./auction.ts";
+import { inviteRace, acceptRace, forfeitRace, joinRacePool, resolveRace, RACE_POOL_TIMEOUT_SEC } from "./race.ts";
+import { grantLoan } from "./loans.ts";
 import { MAX_PLAYERS, MIN_PLAYERS, type Intent, type Room } from "./types.ts";
 
 export type LobbyUser = { id: string; name: string; socketId: string };
@@ -176,19 +179,29 @@ export class RoomManager {
     switch (intent.type) {
       case "move":
         nextRoom = applyMove(active.room, intent.steps);
+        // If landed on retro, automatically start auction for top retro card
+        if (nextRoom.phase.name === "resolve_cell" && nextRoom.phase.cell === "retro") {
+          const retroCard = nextRoom.decks.retro[0];
+          if (retroCard) {
+            nextRoom = {
+              ...nextRoom,
+              decks: { ...nextRoom.decks, retro: nextRoom.decks.retro.slice(1) },
+            };
+            nextRoom = startAuction(nextRoom, retroCard);
+            this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+          }
+        }
         break;
       case "buy":
         nextRoom = applyBuy(active.room, intent.carId);
         nextRoom = advanceTurn(nextRoom, false);
         break;
       case "repair":
-        // roll beaten if beaten defect
         const car = active.room.players
           .find((p) => p.id === playerId)
           ?.cars.find((c) => c.id === intent.carId);
         const roll = car?.defect.kind === "roll" ? d6() : 0;
         nextRoom = applyRepair(active.room, intent.carId, roll);
-        // Repair can be repeated or player can pass/end; keeping on cell
         break;
       case "rent":
         nextRoom = applyRent(active.room);
@@ -198,8 +211,50 @@ export class RoomManager {
         nextRoom = applyTaxi(active.room, intent.carId, d6());
         nextRoom = advanceTurn(nextRoom, false);
         break;
+      case "bid":
+        nextRoom = applyBid(active.room, playerId, intent.step);
+        this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+        break;
       case "pass":
-        nextRoom = advanceTurn(active.room, false);
+        if (active.room.phase.name === "auction") {
+          const res = applyAuctionPass(active.room, playerId);
+          nextRoom = res.room;
+          if (res.ended) {
+            nextRoom = advanceTurn(nextRoom, false);
+          } else {
+            this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+          }
+        } else if (active.room.phase.name === "race" && active.room.phase.state.status === "pool_entry") {
+          // Pass on pool entry
+          break;
+        } else {
+          nextRoom = advanceTurn(active.room, false);
+        }
+        break;
+      case "race_invite":
+        nextRoom = inviteRace(active.room, playerId, intent.targetId, intent.stake);
+        this.scheduleTurnTimer(roomId, 10);
+        break;
+      case "race_accept":
+        nextRoom = acceptRace(active.room, playerId);
+        this.scheduleTurnTimer(roomId, RACE_POOL_TIMEOUT_SEC);
+        break;
+      case "race_forfeit":
+        nextRoom = forfeitRace(active.room, playerId);
+        nextRoom = advanceTurn(nextRoom, false);
+        break;
+      case "race_join_pool":
+        nextRoom = joinRacePool(active.room, playerId);
+        break;
+      case "loan_offer":
+        nextRoom = grantLoan(
+          active.room,
+          playerId,
+          intent.targetId,
+          intent.principal,
+          intent.due,
+          intent.turns,
+        );
         break;
       default:
         throw new RuleError(`unsupported intent: ${(intent as any).type}`);
@@ -244,6 +299,35 @@ export class RoomManager {
   public handleTurnTimeout(roomId: string): void {
     const active = this.rooms.get(roomId);
     if (!active || active.room.phase.name === "finished") return;
+
+    if (active.room.phase.name === "auction") {
+      // Auto-pass current bidder
+      const currentBidderId = active.room.phase.state.currentTurnPlayerId;
+      const res = applyAuctionPass(active.room, currentBidderId);
+      let nextRoom = res.room;
+      if (res.ended) {
+        nextRoom = advanceTurn(nextRoom, false);
+      } else {
+        this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+      }
+      this.updateRoom(roomId, nextRoom);
+      return;
+    }
+
+    if (active.room.phase.name === "race") {
+      if (active.room.phase.state.status === "invitation") {
+        // Auto-forfeit on timeout
+        const nextRoom = advanceTurn(forfeitRace(active.room, active.room.phase.state.targetId), false);
+        this.updateRoom(roomId, nextRoom);
+        return;
+      }
+      if (active.room.phase.state.status === "pool_entry") {
+        // Pool entry closed: roll dice and resolve race
+        const { room: nextRoom } = resolveRace(active.room, d6);
+        this.updateRoom(roomId, advanceTurn(nextRoom, false));
+        return;
+      }
+    }
 
     const nextRoom = applyAutoTurn(active.room, d6());
     this.updateRoom(roomId, nextRoom);
