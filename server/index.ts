@@ -46,13 +46,32 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/" || url.pathname === "/index.html") {
-    const htmlPath = join(process.cwd(), "public", "index.html");
-    if (existsSync(htmlPath)) {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(readFileSync(htmlPath));
-      return;
+  // Serve client dist if built, otherwise public/index.html
+  const clientDist = join(process.cwd(), "client", "dist");
+  const publicDir = join(process.cwd(), "public");
+
+  let filePath = "";
+  if (existsSync(clientDist)) {
+    filePath = url.pathname === "/" ? join(clientDist, "index.html") : join(clientDist, url.pathname);
+    if (!existsSync(filePath)) {
+      filePath = join(clientDist, "index.html");
     }
+  } else if (existsSync(publicDir)) {
+    filePath = join(publicDir, "index.html");
+  }
+
+  if (filePath && existsSync(filePath)) {
+    const ext = filePath.split(".").pop();
+    const mimeMap: Record<string, string> = {
+      html: "text/html; charset=utf-8",
+      js: "application/javascript",
+      css: "text/css",
+      svg: "image/svg+xml",
+      json: "application/json",
+    };
+    res.writeHead(200, { "Content-Type": mimeMap[ext || ""] || "text/plain" });
+    res.end(readFileSync(filePath));
+    return;
   }
 
   res.writeHead(404);

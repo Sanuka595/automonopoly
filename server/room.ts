@@ -203,6 +203,10 @@ export class RoomManager {
         const roll = car?.defect.kind === "roll" ? d6() : 0;
         nextRoom = applyRepair(active.room, intent.carId, roll);
         break;
+      case "buyout":
+        nextRoom = applyBuyout(active.room, intent.carId);
+        nextRoom = advanceTurn(nextRoom, false);
+        break;
       case "rent":
         nextRoom = applyRent(active.room);
         nextRoom = advanceTurn(nextRoom, false);

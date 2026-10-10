@@ -86,6 +86,7 @@ export type Intent =
   | { type: "move"; steps: 1 | 2 | 3 | 4 }
   | { type: "buy"; carId: string }
   | { type: "repair"; carId: string }
+  | { type: "buyout"; carId: string }
   | { type: "rent" }
   | { type: "race_invite"; targetId: string; stake: Euro }
   | { type: "race_accept" }
