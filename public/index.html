@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Тачка — Прототип стола</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    :root {
+      --bg: #121417;
+      --card-bg: #1c2128;
+      --border: #30363d;
+      --text: #e6edf3;
+      --accent: #e3b341;
+      --green: #238636;
+      --red: #da3633;
+      --blue: #58a6ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    body { background: var(--bg); color: var(--text); padding: 16px; }
+    h1, h2, h3 { margin-bottom: 8px; font-weight: 600; }
+    .panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 14px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    button { background: #21262d; color: var(--text); border: 1px solid var(--border); padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+    button:hover:not(:disabled) { background: #30363d; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--green); border-color: var(--green); color: #fff; }
+    input, select { background: #0d1117; color: var(--text); border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; }
+
+    /* Track Layout */
+    .track-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      max-width: 600px;
+      margin: 12px 0;
+    }
+    .cell-box {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      min-height: 80px;
+      background: #161b22;
+      position: relative;
+    }
+    .cell-box.active-cell { border-color: var(--accent); background: #222018; }
+    .cell-title { font-size: 12px; color: #8b949e; text-transform: uppercase; font-weight: bold; }
+    .cell-tokens { display: flex; gap: 4px; margin-top: 8px; }
+    .token {
+      width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: bold; color: #000;
+    }
+
+    /* Player lists and cars */
+    .player-card {
+      border: 1px solid var(--border);
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 8px;
+      background: #161b22;
+    }
+    .player-card.is-turn { border-color: var(--blue); }
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+    .badge-ready { background: #238636; color: #fff; }
+    .badge-broken { background: #da3633; color: #fff; }
+    .badge-rent { background: #1f6feb; color: #fff; }
+    .timer { font-size: 22px; font-weight: bold; color: var(--accent); }
+    .car-item { font-size: 12px; margin-top: 4px; padding: 4px 6px; background: #0d1117; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+
+  <div class="panel">
+    <div class="row">
+      <h2>🚗 Тачка — Dev Playground</h2>
+      <span id="conn-status" class="badge" style="background:#555;">Отключено</span>
+    </div>
+    <div class="row" style="margin-top: 10px;">
+      <label>Комната: <input id="inp-room" value="room1" style="width: 100px;"></label>
+      <label>Игрок:
+        <select id="inp-player">
+          <option value="1">Игрок 1 (Host)</option>
+          <option value="2">Игрок 2</option>
+          <option value="3">Игрок 3</option>
+          <option value="4">Игрок 4</option>
+        </select>
+      </label>
+      <button onclick="connectSocket()">Подключиться</button>
+      <button id="btn-start" class="primary" onclick="startMatch()" style="display:none;">Начать партию</button>
+    </div>
+  </div>
+
+  <div id="lobby-view" class="panel" style="display: none;">
+    <h3>Лобби игроков (<span id="lobby-count">0</span> / 4)</h3>
+    <div id="lobby-list" style="margin-top: 8px;"></div>
+    <p style="font-size: 12px; color: #8b949e; margin-top: 10px;">Для старта нужно минимум 3 игрока. Откройте эту страницу в 2 других вкладках с «Игрок 2» и «Игрок 3».</p>
+  </div>
+
+  <div id="game-view" style="display: none;">
+    <div class="panel">
+      <div class="row" style="justify-content: space-between;">
+        <div>
+          <h3>Фаза: <span id="lbl-phase" style="color: var(--accent);"></span></h3>
+          <div>Сейчас ходит: <strong id="lbl-turn"></strong></div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 12px; color: #8b949e;">Таймер хода:</div>
+          <div id="timer-box" class="timer">30s</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <h3>Действия вашего хода</h3>
+        <div id="actions-box" class="row" style="margin-top: 8px;">
+          <!-- Buttons dynamically injected -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Track -->
+    <div class="panel">
+      <h3>Игровой трек (9 клеток)</h3>
+      <div class="track-grid" id="track-grid"></div>
+    </div>
+
+    <!-- Players & Garage -->
+    <div class="panel">
+      <h3>Игроки за столом</h3>
+      <div id="players-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const COLORS = ["#ff7b72", "#7ee787", "#79c0ff", "#d2a8ff"];
+    const CELLS = [
+      { id: "buckets", name: "0: Вёдра" },
+      { id: "beaten", name: "1: Битьё" },
+      { id: "premium", name: "2: Премиум" },
+      { id: "retro", name: "3: Ретро (Аукцион)" },
+      { id: "picker", name: "4: Автоподбор" },
+      { id: "service", name: "5: Автосервис" },
+      { id: "buyout", name: "6: Скупка" },
+      { id: "rent", name: "7: Прокат" },
+      { id: "race", name: "8: Гонка" }
+    ];
+
+    let socket = null;
+    let myId = null;
+    let myName = null;
+    let currentRoom = null;
+    let timerInterval = null;
+    let timerSec = 30;
+
+    // Fast mock token generator matching DEV secret / dev verification
+    async function getDevInitData(id, name) {
+      const res = await fetch(`/dev/token?id=${id}&name=${encodeURIComponent(name)}`);
+      return (await res.json()).initData;
+    }
+
+    async function connectSocket() {
+      const pIdx = document.getElementById("inp-player").value;
+      myId = `user_${pIdx}`;
+      myName = `Игрок ${pIdx}`;
+      const roomId = document.getElementById("inp-room").value;
+
+      document.getElementById("conn-status").innerText = "Подключение...";
+      if (socket) socket.disconnect();
+
+      const initData = await getDevInitData(pIdx, myName);
+
+      socket = io();
+      socket.on("connect", () => {
+        document.getElementById("conn-status").innerText = "В сети: " + myName;
+        document.getElementById("conn-status").style.background = "#238636";
+
+        socket.emit("auth", { initData, roomId }, (res) => {
+          if (!res.ok) alert("Auth error: " + res.error);
+        });
+      });
+
+      socket.on("lobby:update", (list) => {
+        document.getElementById("lobby-view").style.display = "block";
+        document.getElementById("game-view").style.display = "none";
+        document.getElementById("lobby-count").innerText = list.length;
+        const isHost = list[0] && list[0].id === myId;
+        document.getElementById("btn-start").style.display = isHost && list.length >= 3 ? "inline-block" : "none";
+        document.getElementById("lobby-list").innerHTML = list.map(u => `<div>👤 <b>${u.name}</b> ${u.id === myId ? '(Вы)' : ''}</div>`).join("");
+      });
+
+      socket.on("room:state", (room) => {
+        currentRoom = room;
+        document.getElementById("lobby-view").style.display = "none";
+        document.getElementById("game-view").style.display = "block";
+        renderGame(room);
+      });
+    }
+
+    function startMatch() {
+      socket.emit("lobby:start", (res) => {
+        if (!res.ok) alert("Ошибка старта: " + res.error);
+      });
+    }
+
+    function sendIntent(intent) {
+      socket.emit("intent", intent, (res) => {
+        if (!res.ok) alert("Действие отклонено: " + res.error);
+      });
+    }
+
+    function renderGame(room) {
+      resetTimer();
+      const activePlayer = room.players[room.turn];
+      const isMyTurn = activePlayer && activePlayer.id === myId;
+
+      document.getElementById("lbl-phase").innerText = room.phase.name + (room.phase.cell ? ` (${room.phase.cell})` : "");
+      document.getElementById("lbl-turn").innerText = `${activePlayer?.name} ${isMyTurn ? "(ВАШ ХОД)" : ""}`;
+
+      // Render Track
+      const trackEl = document.getElementById("track-grid");
+      trackEl.innerHTML = CELLS.map((cell, idx) => {
+        const playersHere = room.players.map((p, pi) => ({ p, pi })).filter(x => !x.p.bankrupt && x.p.position === idx);
+        const isActive = activePlayer && activePlayer.position === idx;
+        const tokens = playersHere.map(x => `<div class="token" style="background:${COLORS[x.pi]}">${x.pi + 1}</div>`).join("");
+        return `
+          <div class="cell-box ${isActive ? 'active-cell' : ''}">
+            <div class="cell-title">${cell.name}</div>
+            <div class="cell-tokens">${tokens}</div>
+          </div>
+        `;
+      }).join("");
+
+      // Render Players
+      const playersEl = document.getElementById("players-list");
+      playersEl.innerHTML = room.players.map((p, idx) => {
+        const isTurn = idx === room.turn;
+        const color = COLORS[idx];
+        const carsHtml = p.cars.map(c => `
+          <div class="car-item">
+            <span>[${c.class}] Ремонт: ${c.defect.kind === 'fixed' ? c.defect.repair + '€' : (c.defect.kind === 'roll' ? 'd6*' + c.defect.multiplier + '€' : c.defect.kind)}</span>
+            <span class="badge badge-${c.status}">${c.status}</span>
+          </div>
+        `).join("") || '<div style="color:#666;font-size:12px;">Нет машин</div>';
+
+        return `
+          <div class="player-card ${isTurn ? 'is-turn' : ''}">
+            <div class="row" style="justify-content:space-between;">
+              <div>
+                <span class="token" style="background:${color}; display:inline-flex;">${idx + 1}</span>
+                <b>${p.name}</b> ${p.id === myId ? '(Вы)' : ''} ${p.bankrupt ? '<span class="badge" style="background:#555">БАНКРОТ</span>' : ''}
+              </div>
+              <div><b>${p.cash} €</b> | Позиция: клетка ${p.position}</div>
+            </div>
+            <div style="margin-top:6px;">Гараж (${p.cars.length}/3):</div>
+            ${carsHtml}
+          </div>
+        `;
+      }).join("");
+
+      // Render Actions for active player
+      const actBox = document.getElementById("actions-box");
+      actBox.innerHTML = "";
+      if (!isMyTurn || room.phase.name === "finished") {
+        actBox.innerHTML = "<span style='color:#8b949e;'>Ожидание хода соперника...</span>";
+        return;
+      }
+
+      if (room.phase.name === "choose_move") {
+        [1, 2, 3, 4].forEach(steps => {
+          const cost = steps > 2 ? ` (-${(steps - 2) * 300}€)` : " (бесплатно)";
+          const btn = document.createElement("button");
+          btn.innerText = `Шаг +${steps}${cost}`;
+          btn.className = "primary";
+          btn.onclick = () => sendIntent({ type: "move", steps });
+          actBox.appendChild(btn);
+        });
+      } else if (room.phase.name === "resolve_cell") {
+        const myCar = activePlayer.cars[0];
+        // Taxi action always available
+        if (myCar && myCar.class !== "retro") {
+          const btnTaxi = document.createElement("button");
+          btnTaxi.innerText = `🚖 Таксовать на [${myCar.class}] (d6 * ${myCar.taxiMult}€)`;
+          btnTaxi.onclick = () => sendIntent({ type: "taxi", carId: myCar.id });
+          actBox.appendChild(btnTaxi);
+        }
+
+        // Cell specific actions
+        const cell = room.phase.cell;
+        if (cell === "service") {
+          activePlayer.cars.filter(c => c.status === "broken").forEach(c => {
+            const btnRep = document.createElement("button");
+            btnRep.innerText = `🔧 Ремонт ${c.class} (${c.defect.kind === 'fixed' ? c.defect.repair + '€' : 'd6*множитель'})`;
+            btnRep.onclick = () => sendIntent({ type: "repair", carId: c.id });
+            actBox.appendChild(btnRep);
+          });
+        } else if (cell === "buyout") {
+          activePlayer.cars.filter(c => c.status !== "broken").forEach(c => {
+            const btnSell = document.createElement("button");
+            btnSell.innerText = `💰 Сдать в скупку ${c.class} (+${c.buyout}€)`;
+            btnSell.onclick = () => sendIntent({ type: "buyout", carId: c.id });
+            actBox.appendChild(btnSell);
+          });
+        } else if (cell === "rent") {
+          const btnRent = document.createElement("button");
+          btnRent.innerText = "🏢 Сдать машины в прокат";
+          btnRent.onclick = () => sendIntent({ type: "rent" });
+          actBox.appendChild(btnRent);
+        } else if (["buckets", "beaten", "premium"].includes(cell)) {
+          const deckKey = cell === "buckets" ? "bucket" : cell;
+          const openCar = room.decks[deckKey]?.[0];
+          if (openCar) {
+            const btnBuy = document.createElement("button");
+            btnBuy.innerText = `Купить ${openCar.class} (${openCar.purchase}€)`;
+            btnBuy.onclick = () => sendIntent({ type: "buy", carId: openCar.id });
+            actBox.appendChild(btnBuy);
+          }
+        }
+
+        const btnPass = document.createElement("button");
+        btnPass.innerText = "Завершить ход (Пас)";
+        btnPass.onclick = () => sendIntent({ type: "pass" });
+        actBox.appendChild(btnPass);
+      }
+    }
+
+    function resetTimer() {
+      if (timerInterval) clearInterval(timerInterval);
+      timerSec = 30;
+      const box = document.getElementById("timer-box");
+      box.innerText = timerSec + "s";
+      timerInterval = setInterval(() => {
+        timerSec--;
+        if (timerSec < 0) timerSec = 0;
+        box.innerText = timerSec + "s";
+      }, 1000);
+    }
+  </script>
+</body>
+</html>
