@@ -159,7 +159,7 @@
 
     async function connectSocket() {
       const pIdx = document.getElementById("inp-player").value;
-      myId = `user_${pIdx}`;
+      myId = String(pIdx);
       myName = `Игрок ${pIdx}`;
       const roomId = document.getElementById("inp-room").value;
 
