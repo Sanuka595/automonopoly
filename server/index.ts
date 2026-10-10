@@ -2,11 +2,17 @@ import { createServer } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
+import process from "node:process";
 import { Server } from "socket.io";
 import { openDb } from "./snapshot.ts";
 import { RoomManager } from "./room.ts";
 
-const PORT = Number(process.env.PORT || 3000);
+// Load .env if present (native Node.js)
+if (process.loadEnvFile) {
+  try { process.loadEnvFile(); } catch {}
+}
+
+const PORT = Number(process.env.PORT || 3005);
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const SQLITE_PATH = process.env.SQLITE_PATH || "./tachka.sqlite";
 
