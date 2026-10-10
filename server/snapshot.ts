@@ -31,5 +31,12 @@ export const saveRoom = (db: DatabaseSync, room: Room): void => {
   ).run(room.id, encode(room), room.updatedAt);
 };
 
+export const serializeRoom = (room: Room): any =>
+  JSON.parse(
+    JSON.stringify(room, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
+  );
+
 export const loadRooms = (db: DatabaseSync): Room[] =>
   db.prepare("SELECT state FROM rooms").all().map((row) => decode(String(row.state)));
+
+

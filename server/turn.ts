@@ -1,4 +1,4 @@
-import { canPay, EXTRA_STEP_COST, sub } from "./money.ts";
+import { canPay, EXTRA_STEP_COST, sub, euro } from "./money.ts";
 import { cellAt, CELL_CAP, stepCost, stepsWalked, TRACK_LEN } from "./track.ts";
 import { GARAGE_CAP, type Intent, type Player, type Room } from "./types.ts";
 
@@ -43,6 +43,140 @@ export const applyMove = (room: Room, steps: 1 | 2 | 3 | 4): Room => {
   };
 };
 
+export const WIN_CASH = euro(32_000);
+export const TURN_TIMEOUT_SEC = 30;
+export const DISCONNECT_TIMEOUT_SEC = 5;
+export const DISCONNECT_GRACE_SEC = 10;
+export const MAX_MISSED_LAPS = 3;
+
+/** Checks if a player has met victory conditions. */
+export const checkWin = (player: Player): boolean =>
+  player.cash >= WIN_CASH && player.loans.length === 0;
+
+/** Advances turn to next non-bankrupt player. Increments missedLaps if timeout, checks bankruptcy. */
+export const advanceTurn = (room: Room, wasAuto = false): Room => {
+  const activeCount = room.players.filter((p) => !p.bankrupt).length;
+  if (activeCount <= 1) {
+    const winner = room.players.find((p) => !p.bankrupt);
+    return {
+      ...room,
+      phase: { name: "finished", winnerId: winner?.id ?? "" },
+      updatedAt: Date.now(),
+    };
+  }
+
+  const current = seat(room);
+  let updatedCurrent = { ...current, turnCount: current.turnCount + 1 };
+
+  // Track missed turns / bankruptcy (RULES: 3 missed laps -> bankrupt)
+  if (wasAuto) {
+    const missed = updatedCurrent.missedLaps + 1;
+    if (missed >= MAX_MISSED_LAPS) {
+      // Player bankrupt: cars burn to discards, loans cancelled
+      updatedCurrent = { ...updatedCurrent, bankrupt: true, missedLaps: missed };
+    } else {
+      updatedCurrent = { ...updatedCurrent, missedLaps: missed };
+    }
+  } else {
+    updatedCurrent = { ...updatedCurrent, missedLaps: 0 };
+  }
+
+  let nextPlayers = room.players.map((p) => (p.id === current.id ? updatedCurrent : p));
+
+  // If player went bankrupt, put their cars into discards
+  let discards = room.discards;
+  if (updatedCurrent.bankrupt) {
+    const newDiscards = { ...room.discards };
+    for (const car of current.cars) {
+      newDiscards[car.class] = [...newDiscards[car.class], car];
+    }
+    updatedCurrent.cars = [];
+    nextPlayers = room.players.map((p) => (p.id === current.id ? updatedCurrent : p));
+    discards = newDiscards;
+  }
+
+  // Check victory for current player before passing turn (RULES: win at end of turn)
+  if (!updatedCurrent.bankrupt && checkWin(updatedCurrent)) {
+    return {
+      ...room,
+      players: nextPlayers,
+      discards,
+      phase: { name: "finished", winnerId: updatedCurrent.id },
+      updatedAt: Date.now(),
+    };
+  }
+
+  // Find next non-bankrupt seat
+  let nextTurn = (room.turn + 1) % room.players.length;
+  let safety = room.players.length;
+  while (nextPlayers[nextTurn]?.bankrupt && safety > 0) {
+    nextTurn = (nextTurn + 1) % room.players.length;
+    safety--;
+  }
+
+  // Check if only 1 player remains after bankruptcy
+  const remaining = nextPlayers.filter((p) => !p.bankrupt);
+  if (remaining.length <= 1) {
+    return {
+      ...room,
+      players: nextPlayers,
+      discards,
+      phase: { name: "finished", winnerId: remaining[0]?.id ?? "" },
+      updatedAt: Date.now(),
+    };
+  }
+
+  return {
+    ...room,
+    players: nextPlayers,
+    turn: nextTurn,
+    discards,
+    phase: { name: "choose_move" },
+    updatedAt: Date.now(),
+  };
+};
+
+/** Executes auto-turn: moves forward 1 (or smallest legal step) and taxis. */
+export const applyAutoTurn = (
+  room: Room,
+  taxiRoll: number,
+): Room => {
+  if (room.phase.name === "choose_move") {
+    // Try step 1. If full, try step 2, up to 4.
+    let movedRoom: Room | null = null;
+    for (const step of [1, 2, 3, 4] as const) {
+      try {
+        movedRoom = applyMove(room, step);
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!movedRoom) {
+      // Stuck (should not happen with 2 cell cap and 4 cells reach), advance turn directly
+      return advanceTurn(room, true);
+    }
+    room = movedRoom;
+  }
+
+  // On resolve_cell, perform taxi with first car if player has one
+  const player = seat(room);
+  const taxiCar = player.cars.find((c) => c.class !== "retro");
+  if (taxiCar) {
+    const mult = player.cars[0]?.taxiMult ?? 0n;
+    if (mult > 0n) {
+      const earned = mult * BigInt(taxiRoll);
+      const updated = { ...player, cash: player.cash + earned };
+      room = {
+        ...room,
+        players: room.players.map((p) => (p.id === player.id ? updated : p)),
+      };
+    }
+  }
+
+  return advanceTurn(room, true);
+};
+
 export const garageFull = (player: Player): boolean => player.cars.length >= GARAGE_CAP;
 
 export const hasOverdueDebt = (player: Player): boolean => player.loans.some((l) => l.overdue);
@@ -54,3 +188,5 @@ export const assertIntent = (room: Room, playerId: string, intent: Intent): void
     throw new RuleError("move only in choose_move");
   }
 };
+
+

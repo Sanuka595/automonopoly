@@ -2,8 +2,11 @@
   "name": "tachka",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "start": "node --experimental-strip-types server/index.ts",
     "test": "node --experimental-strip-types --test server/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -12,6 +15,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "socket.io-client": "^4.8.4",
     "typescript": "^5.8.0"
   }
 }
