@@ -1,4 +1,4 @@
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import { io, Socket } from 'socket.io-client'
 import type { Cell, Intent, Room } from './types'
 
@@ -25,7 +25,18 @@ export default function App() {
   const [roomId] = useState<string>('room1')
   const [connected, setConnected] = useState<boolean>(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [turnTimer, setTurnTimer] = useState<number>(30)
   const [, startTransition] = useTransition()
+
+  useEffect(() => {
+    if (!room || room.phase.name === 'finished') return
+    setTurnTimer(30)
+    const interval = setInterval(() => {
+      setTurnTimer((prev) => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [room?.turn, room?.phase.name])
+
 
   // Connect & Auth
   const handleConnect = async (playerNum: string) => {
@@ -170,7 +181,7 @@ export default function App() {
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Сейчас ходит:</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Таймер: <b className="tabular-nums" style={{ color: 'var(--accent-gold)' }}>{turnTimer}s</b></div>
                 <div style={{ fontSize: 14, fontWeight: 'bold' }}>
                   {activePlayer?.name} {isMyTurn && '🔥 (ВЫ)'}
                 </div>
@@ -407,14 +418,15 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
                   Гараж ({p.cars.length}/3):{' '}
                   {p.cars.length === 0
                     ? 'пусто'
                     : p.cars.map((c) => (
                         <span key={c.id} style={{ marginRight: 6 }}>
                           [{c.class}{' '}
-                          <span className={`badge badge-${c.status}`}>{c.status}</span>]
+                          <span className={`badge badge-${c.status}`}>{c.status}</span>
+                          {' '}{c.defect.kind === 'fixed' ? `${c.defect.repair}€` : c.defect.kind === 'roll' ? `d6*${c.defect.multiplier}€` : c.defect.kind}]
                         </span>
                       ))}
                 </div>
