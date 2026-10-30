@@ -35,11 +35,19 @@ test("a 3-step jump costs 300 and lands on the cell", () => {
   assert.deepEqual(next.phase, { name: "resolve_cell", cell: "retro" });
 });
 
-test("cannot stop on a cell that already holds 2", () => {
-  const full = room({
-    players: [player(), player({ id: "b", position: 1 }), player({ id: "c", name: "C", position: 1 })],
+test("any number of players can stop on the same cell", () => {
+  const crowded = room({
+    players: [
+      player(),
+      player({ id: "b", position: 1 }),
+      player({ id: "c", name: "C", position: 1 }),
+      player({ id: "d", name: "D", position: 1 }),
+    ],
   });
-  assert.throws(() => applyMove(full, 1), RuleError);
+  const next = applyMove(crowded, 1);
+  assert.equal(next.players[0]?.position, 1);
+  assert.equal(next.players.filter((p) => p.position === 1).length, 4);
+  assert.deepEqual(next.phase, { name: "resolve_cell", cell: "beaten" });
 });
 
 test("a move from the wrong seat is rejected", () => {

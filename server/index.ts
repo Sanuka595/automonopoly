@@ -31,9 +31,20 @@ const makeDevInitData = (id: number, name: string): string => {
 
 const httpServer = createServer((req, res) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
+  const cors = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+
+  if (req.method === "OPTIONS" && (url.pathname === "/dev/token" || url.pathname === "/health")) {
+    res.writeHead(204, cors);
+    res.end();
+    return;
+  }
 
   if (url.pathname === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(200, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify({ ok: true, uptime: process.uptime() }));
     return;
   }
@@ -41,7 +52,7 @@ const httpServer = createServer((req, res) => {
   if (url.pathname === "/dev/token") {
     const id = Number(url.searchParams.get("id") || "1");
     const name = url.searchParams.get("name") || `Player ${id}`;
-    res.writeHead(200, { "Content-Type": "application/json" });
+    res.writeHead(200, { "Content-Type": "application/json", ...cors });
     res.end(JSON.stringify({ initData: makeDevInitData(id, name) }));
     return;
   }

@@ -5,13 +5,14 @@ export type CarClass = "bucket" | "beaten" | "premium" | "retro";
 export type CarStatus = "broken" | "ready" | "in_rent";
 
 export type Defect =
-  | { kind: "fixed"; repair: Euro }
-  | { kind: "roll"; multiplier: Euro } // beaten: repair = d6 * multiplier
-  | { kind: "perfect" } // ready immediately
-  | { kind: "raspil" }; // buyout pays purchase price, margin 0
+  | { kind: "fixed"; repair: Euro; desc?: string }
+  | { kind: "roll"; multiplier: Euro; desc?: string } // beaten: repair = d6 * multiplier
+  | { kind: "perfect"; desc?: string } // ready immediately
+  | { kind: "raspil"; repair?: Euro; desc?: string }; // buyout pays purchase price, margin 0
 
 export type Car = {
   id: string;
+  name?: string;
   class: CarClass;
   purchase: Euro;
   buyout: Euro;
@@ -39,7 +40,7 @@ export type Player = {
   name: string;
   cash: Euro;
   position: number;
-  cars: Car[]; // max 3
+  cars: Car[]; // max 4
   loans: Loan[]; // debts this player owes
   missedLaps: number;
   bankrupt: boolean;
@@ -61,6 +62,9 @@ export type RaceState = {
   pool: Euro; // initiator stake + target stake + 1000 bank bonus + pool joiners
   status: "invitation" | "pool_entry" | "rolling";
   participants: string[]; // users who entered the pool
+  rolls?: Record<string, number> | undefined; // final rolled dice per participant
+  tieContenders?: string[] | undefined; // contenders in tie-break reroll
+  winnerId?: string | undefined; // race winner
 };
 
 export type Phase =
@@ -72,6 +76,15 @@ export type Phase =
   | { name: "end_turn" }
   | { name: "finished"; winnerId: string };
 
+export type PendingLoan = {
+  id: string;
+  lenderId: string;
+  borrowerId: string;
+  principal: Euro;
+  due: Euro;
+  turns: number;
+};
+
 export type Room = {
   id: string;
   players: Player[]; // seat order is turn order
@@ -79,6 +92,8 @@ export type Room = {
   phase: Phase;
   decks: Record<CarClass, Car[]>;
   discards: Record<CarClass, Car[]>;
+  pendingLoan?: PendingLoan | null;
+  timerExpiresAt?: number | undefined;
   updatedAt: number;
 };
 
@@ -86,6 +101,7 @@ export type Intent =
   | { type: "move"; steps: 1 | 2 | 3 | 4 }
   | { type: "buy"; carId: string }
   | { type: "repair"; carId: string }
+  | { type: "scrap"; carId: string }
   | { type: "buyout"; carId: string }
   | { type: "rent" }
   | { type: "race_invite"; targetId: string; stake: Euro }
@@ -96,9 +112,11 @@ export type Intent =
   | { type: "pass" }
   | { type: "taxi"; carId: string }
   | { type: "loan_offer"; targetId: string; principal: Euro; due: Euro; turns: number }
-  | { type: "loan_accept"; loanId: string };
+  | { type: "loan_accept"; loanId: string }
+  | { type: "loan_reject" }
+  | { type: "start_auction" };
 
 
-export const GARAGE_CAP = 3;
+export const GARAGE_CAP = 4;
 export const MIN_PLAYERS = 3;
 export const MAX_PLAYERS = 4;

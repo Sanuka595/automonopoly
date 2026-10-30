@@ -2,13 +2,14 @@ export type CarClass = 'bucket' | 'beaten' | 'premium' | 'retro'
 export type CarStatus = 'broken' | 'ready' | 'in_rent'
 
 export type Defect =
-  | { kind: 'fixed'; repair: string }
-  | { kind: 'roll'; multiplier: string }
-  | { kind: 'perfect' }
-  | { kind: 'raspil' }
+  | { kind: 'fixed'; repair: string; desc?: string }
+  | { kind: 'roll'; multiplier: string; desc?: string }
+  | { kind: 'perfect'; desc?: string }
+  | { kind: 'raspil'; repair?: string; desc?: string }
 
 export type Car = {
   id: string
+  name?: string
   class: CarClass
   purchase: string
   buyout: string
@@ -66,6 +67,9 @@ export type RaceState = {
   pool: string
   status: 'invitation' | 'pool_entry' | 'rolling'
   participants: string[]
+  rolls?: Record<string, number> | undefined
+  tieContenders?: string[] | undefined
+  winnerId?: string | undefined
 }
 
 export type Phase =
@@ -77,6 +81,15 @@ export type Phase =
   | { name: 'end_turn' }
   | { name: 'finished'; winnerId: string }
 
+export type PendingLoan = {
+  id: string
+  lenderId: string
+  borrowerId: string
+  principal: string
+  due: string
+  turns: number
+}
+
 export type Room = {
   id: string
   players: Player[]
@@ -84,6 +97,8 @@ export type Room = {
   phase: Phase
   decks: Record<CarClass, Car[]>
   discards: Record<CarClass, Car[]>
+  pendingLoan?: PendingLoan | null
+  timerExpiresAt?: number | undefined
   updatedAt: number
 }
 
@@ -91,6 +106,7 @@ export type Intent =
   | { type: 'move'; steps: 1 | 2 | 3 | 4 }
   | { type: 'buy'; carId: string }
   | { type: 'repair'; carId: string }
+  | { type: 'scrap'; carId: string }
   | { type: 'buyout'; carId: string }
   | { type: 'rent' }
   | { type: 'race_invite'; targetId: string; stake: string }
@@ -102,3 +118,5 @@ export type Intent =
   | { type: 'taxi'; carId: string }
   | { type: 'loan_offer'; targetId: string; principal: string; due: string; turns: number }
   | { type: 'loan_accept'; loanId: string }
+  | { type: 'loan_reject' }
+  | { type: 'start_auction' }

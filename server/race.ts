@@ -135,44 +135,93 @@ export const joinRacePool = (room: Room, playerId: string): Room => {
   };
 };
 
-/** Resolves race rolls using server d6. Highest roll wins the entire pool. In ties, reroll tied leaders. */
+export type StepRaceResult = {
+  room: Room;
+  rolls: Record<string, number>;
+  isTie: boolean;
+  tieContenders?: string[];
+  winnerId?: string;
+};
+
+/**
+ * Executes one roll round of the race.
+ * Rolls d6 for each active contender (all participants or tied leaders).
+ * If a single leader emerges, awards the pool and finishes.
+ * If tied leaders emerge, sets tieContenders for a tie-break reroll.
+ */
+export const stepRaceRoll = (
+  room: Room,
+  rollFn: () => number,
+): StepRaceResult => {
+  if (room.phase.name !== "race") throw new RuleError("not in race");
+  const state = room.phase.state;
+  const contenders =
+    state.tieContenders && state.tieContenders.length > 1
+      ? state.tieContenders
+      : state.participants;
+
+  const roundRolls: Record<string, number> = {};
+  for (const id of contenders) {
+    roundRolls[id] = rollFn();
+  }
+
+  const maxRoll = Math.max(...Object.values(roundRolls));
+  const highest = contenders.filter((id) => roundRolls[id] === maxRoll);
+
+  if (highest.length === 1) {
+    const winnerId = highest[0]!;
+    const winner = playerById(room, winnerId);
+    const updatedWinner = { ...winner, cash: add(winner.cash, state.pool) };
+    const nextRoom: Room = {
+      ...room,
+      players: room.players.map((p) => (p.id === winner.id ? updatedWinner : p)),
+      phase: {
+        name: "race",
+        state: {
+          ...state,
+          status: "rolling",
+          rolls: roundRolls,
+          tieContenders: undefined,
+          winnerId,
+        },
+      },
+      updatedAt: Date.now(),
+    };
+    return { room: nextRoom, rolls: roundRolls, isTie: false, winnerId };
+  }
+
+  // Tie: tie-break reroll required between tied leaders
+  const tieContenders = highest;
+  const nextRoom: Room = {
+    ...room,
+    phase: {
+      name: "race",
+      state: {
+        ...state,
+        status: "rolling",
+        rolls: roundRolls,
+        tieContenders,
+        winnerId: undefined,
+      },
+    },
+    updatedAt: Date.now(),
+  };
+  return { room: nextRoom, rolls: roundRolls, isTie: true, tieContenders };
+};
+
+/** Resolves race rolls synchronously until a single winner is determined. */
 export const resolveRace = (
   room: Room,
   rollFn: () => number,
 ): { room: Room; winnerId: string; rolls: Record<string, number> } => {
-  if (room.phase.name !== "race") throw new RuleError("not in race");
-  const state = room.phase.state;
-  let contenders = [...state.participants];
-  const finalRolls: Record<string, number> = {};
-
-  while (contenders.length > 1) {
-    const rolls = contenders.map((id) => {
-      const r = rollFn();
-      finalRolls[id] = r;
-      return { id, roll: r };
-    });
-    const maxRoll = Math.max(...rolls.map((r) => r.roll));
-    const highest = rolls.filter((r) => r.roll === maxRoll);
-    if (highest.length === 1) {
-      contenders = [highest[0]!.id];
-      break;
+  let currentRoom = room;
+  let lastRolls: Record<string, number> = {};
+  while (true) {
+    const res = stepRaceRoll(currentRoom, rollFn);
+    currentRoom = res.room;
+    lastRolls = res.rolls;
+    if (!res.isTie && res.winnerId) {
+      return { room: currentRoom, winnerId: res.winnerId, rolls: lastRolls };
     }
-    // Reroll between tied contenders
-    contenders = highest.map((h) => h.id);
   }
-
-  const winnerId = contenders[0]!;
-  const winner = playerById(room, winnerId);
-  const updatedWinner = { ...winner, cash: add(winner.cash, state.pool) };
-
-  return {
-    winnerId,
-    rolls: finalRolls,
-    room: {
-      ...room,
-      players: room.players.map((p) => (p.id === winner.id ? updatedWinner : p)),
-      phase: { name: "end_turn" },
-      updatedAt: Date.now(),
-    },
-  };
 };

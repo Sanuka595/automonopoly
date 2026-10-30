@@ -1,7 +1,8 @@
 import { canPay, EXTRA_STEP_COST, sub, euro } from "./money.ts";
-import { cellAt, CELL_CAP, stepCost, stepsWalked, TRACK_LEN } from "./track.ts";
+import { cellAt, stepCost, stepsWalked, TRACK_LEN } from "./track.ts";
 import { GARAGE_CAP, type Intent, type Player, type Room } from "./types.ts";
 import { processPlayerLoansAtTurnEnd } from "./loans.ts";
+import { recycleAllEmptyDecks } from "./decks.ts";
 
 export class RuleError extends Error {}
 
@@ -11,10 +12,7 @@ const seat = (room: Room): Player => {
   return player;
 };
 
-const occupied = (room: Room, index: number): number =>
-  room.players.filter((p) => !p.bankrupt && p.position === index).length;
-
-/** choose_move → resolve_cell. Charges steps over 2, blocks a full cell. */
+/** choose_move → resolve_cell. Charges steps over 2. Cells have no token cap. */
 export const applyMove = (room: Room, steps: 1 | 2 | 3 | 4): Room => {
   if (room.phase.name !== "choose_move") throw new RuleError("not choose_move");
   const player = seat(room);
@@ -24,7 +22,6 @@ export const applyMove = (room: Room, steps: 1 | 2 | 3 | 4): Room => {
 
   const from = player.position;
   const to = (from + steps) % TRACK_LEN;
-  if (occupied(room, to) >= CELL_CAP) throw new RuleError("cell is full");
   const walked = stepsWalked(from, to);
 
   const next: Player = {
@@ -37,8 +34,11 @@ export const applyMove = (room: Room, steps: 1 | 2 | 3 | 4): Room => {
         : c,
     ),
   };
+  const { decks, discards } = recycleAllEmptyDecks(room.decks, room.discards);
   return {
     ...room,
+    decks,
+    discards,
     players: room.players.map((p) => (p.id === player.id ? next : p)),
     phase: { name: "resolve_cell", cell: cellAt(to) },
   };
@@ -122,11 +122,13 @@ export const advanceTurn = (room: Room, wasAuto = false): Room => {
 
   // Check if only 1 player remains after bankruptcy
   const remaining = nextPlayers.filter((p) => !p.bankrupt);
+  const { decks: nextDecks, discards: nextDiscards } = recycleAllEmptyDecks(room.decks, discards);
   if (remaining.length <= 1) {
     return {
       ...room,
+      decks: nextDecks,
       players: nextPlayers,
-      discards,
+      discards: nextDiscards,
       phase: { name: "finished", winnerId: remaining[0]?.id ?? "" },
       updatedAt: Date.now(),
     };
@@ -134,9 +136,11 @@ export const advanceTurn = (room: Room, wasAuto = false): Room => {
 
   return {
     ...room,
+    decks: nextDecks,
     players: nextPlayers,
     turn: nextTurn,
-    discards,
+    discards: nextDiscards,
+    pendingLoan: null,
     phase: { name: "choose_move" },
     updatedAt: Date.now(),
   };
@@ -148,7 +152,7 @@ export const applyAutoTurn = (
   taxiRoll: number,
 ): Room => {
   if (room.phase.name === "choose_move") {
-    // Try step 1. If full, try step 2, up to 4.
+    // Smallest legal step. A later step is only a fallback if step 1 is illegal.
     let movedRoom: Room | null = null;
     for (const step of [1, 2, 3, 4] as const) {
       try {
@@ -159,7 +163,7 @@ export const applyAutoTurn = (
       }
     }
     if (!movedRoom) {
-      // Stuck (should not happen with 2 cell cap and 4 cells reach), advance turn directly
+      // No legal step (for example, cannot pay a longer jump). Advance the turn.
       return advanceTurn(room, true);
     }
     room = movedRoom;
@@ -215,6 +219,24 @@ export const assertIntent = (room: Room, playerId: string, intent: Intent): void
       }
       return;
     }
+    if (room.phase.state.status === "rolling") {
+      throw new RuleError("rolling in progress");
+    }
+  }
+
+  if (intent.type === "loan_accept" || intent.type === "loan_reject") {
+    if (!room.pendingLoan) throw new RuleError("no pending loan");
+    if (intent.type === "loan_accept" && room.pendingLoan.borrowerId !== playerId) {
+      throw new RuleError("only borrower can accept loan");
+    }
+    if (
+      intent.type === "loan_reject" &&
+      room.pendingLoan.borrowerId !== playerId &&
+      room.pendingLoan.lenderId !== playerId
+    ) {
+      throw new RuleError("not authorized to reject loan");
+    }
+    return;
   }
 
   // General turns

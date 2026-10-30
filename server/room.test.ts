@@ -102,6 +102,8 @@ test("room lifecycle: lobby join, start game, state broadcast, auto turn", async
   assert.equal(startedState.phase.name, "choose_move");
   assert.equal(startedState.players[0].cash, "1600");
   assert.equal(startedState.players[0].cars.length, 1);
+  assert(typeof startedState.timerExpiresAt === "number");
+  assert(startedState.timerExpiresAt > Date.now());
 
   // 4. Test auto-turn trigger
   const roomBefore = manager.getRoom(roomId);
@@ -115,4 +117,54 @@ test("room lifecycle: lobby join, start game, state broadcast, auto turn", async
   assert.notEqual(roomAfter.turn, roomBefore.turn);
   const prevPlayer = roomAfter.players.find((p) => p.id === activePlayer?.id);
   assert.equal(prevPlayer?.missedLaps, 1);
+
+  // 5. Test P2P loan intent flow
+  const currentSeat = roomAfter.players[roomAfter.turn]!;
+  const targetPlayer = roomAfter.players.find((p) => p.id !== currentSeat.id)!;
+
+  // Active seat offers loan of 300 with return 400 in 2 turns
+  manager.handleIntent(roomId, currentSeat.id, {
+    type: "loan_offer",
+    targetId: targetPlayer.id,
+    principal: 300n as any,
+    due: 400n as any,
+    turns: 2,
+  });
+
+  const withPending = manager.getRoom(roomId);
+  assert(withPending?.pendingLoan);
+  assert.equal(withPending.pendingLoan.lenderId, currentSeat.id);
+  assert.equal(withPending.pendingLoan.borrowerId, targetPlayer.id);
+
+  // Target accepts loan
+  manager.handleIntent(roomId, targetPlayer.id, {
+    type: "loan_accept",
+    loanId: withPending.pendingLoan.id,
+  });
+
+  const afterAccepted = manager.getRoom(roomId);
+  assert.equal(afterAccepted?.pendingLoan, null);
+  const borrower = afterAccepted?.players.find((p) => p.id === targetPlayer.id);
+  assert.equal(borrower?.loans.length, 1);
+  assert.equal(borrower?.loans[0]?.due, 400n);
+
+  // 6. Test taxi ack returns rolled number
+  const taxiPlayer = afterAccepted!.players[afterAccepted!.turn]!;
+  const taxiSocket = taxiPlayer.id === "101" ? c1 : taxiPlayer.id === "102" ? c2 : c3;
+
+  // Move 1 step to enter resolve_cell
+  await new Promise<void>((resolve, reject) => {
+    taxiSocket.emit("intent", { type: "move", steps: 1 }, (res: any) => {
+      if (res?.ok) resolve();
+      else reject(new Error(res?.error));
+    });
+  });
+
+  const carToTaxi = taxiPlayer.cars[0]!;
+  const taxiRes: any = await new Promise((resolve) => {
+    taxiSocket.emit("intent", { type: "taxi", carId: carToTaxi.id }, resolve);
+  });
+  assert.equal(taxiRes.ok, true);
+  assert(typeof taxiRes.rolled === "number");
+  assert(taxiRes.rolled >= 1 && taxiRes.rolled <= 6);
 });

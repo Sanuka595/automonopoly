@@ -1,13 +1,15 @@
 import type { DatabaseSync } from "node:sqlite";
+import { canPay } from "./money.ts";
 import { Server, Socket } from "socket.io";
 import { verifyInitData } from "./auth.ts";
 import { initGame } from "./decks.ts";
-import { applyBuy, applyBuyout, applyRent, applyRepair, applyTaxi } from "./actions.ts";
+import { applyBuy, applyBuyout, applyRent, applyRepair, applyScrap, applyTaxi } from "./actions.ts";
 import { d6 } from "./rng.ts";
 import { saveRoom, serializeRoom } from "./snapshot.ts";
 import { advanceTurn, applyAutoTurn, applyMove, assertIntent, RuleError, TURN_TIMEOUT_SEC, DISCONNECT_TIMEOUT_SEC, DISCONNECT_GRACE_SEC } from "./turn.ts";
 import { applyBid, applyAuctionPass, startAuction, AUCTION_TIMEOUT_SEC } from "./auction.ts";
-import { inviteRace, acceptRace, forfeitRace, joinRacePool, resolveRace, RACE_POOL_TIMEOUT_SEC } from "./race.ts";
+import { inviteRace, acceptRace, forfeitRace, joinRacePool, stepRaceRoll, RACE_POOL_TIMEOUT_SEC } from "./race.ts";
+import { recycleDeck } from "./decks.ts";
 import { grantLoan } from "./loans.ts";
 import { MAX_PLAYERS, MIN_PLAYERS, type Intent, type Room } from "./types.ts";
 
@@ -81,8 +83,8 @@ export class RoomManager {
         return;
       }
       try {
-        this.handleIntent(currentRoomId, authUser.id, intent);
-        if (ack) ack({ ok: true });
+        const res = this.handleIntent(currentRoomId, authUser.id, intent);
+        if (ack) ack({ ok: true, ...(res || {}) });
       } catch (err: any) {
         if (ack) ack({ ok: false, error: err.message });
       }
@@ -170,17 +172,21 @@ export class RoomManager {
     return room;
   }
 
-  public handleIntent(roomId: string, playerId: string, intent: Intent): void {
+  public handleIntent(roomId: string, playerId: string, intent: Intent): { rolled?: number } | void {
     const active = this.rooms.get(roomId);
     if (!active) throw new RuleError("room not found");
     assertIntent(active.room, playerId, intent);
 
     let nextRoom = active.room;
+    let rolled: number | undefined;
+
     switch (intent.type) {
       case "move":
         nextRoom = applyMove(active.room, intent.steps);
         // If landed on retro, automatically start auction for top retro card
         if (nextRoom.phase.name === "resolve_cell" && nextRoom.phase.cell === "retro") {
+          const { decks, discards } = recycleDeck(nextRoom.decks, nextRoom.discards, "retro");
+          nextRoom = { ...nextRoom, decks, discards };
           const retroCard = nextRoom.decks.retro[0];
           if (retroCard) {
             nextRoom = {
@@ -188,7 +194,10 @@ export class RoomManager {
               decks: { ...nextRoom.decks, retro: nextRoom.decks.retro.slice(1) },
             };
             nextRoom = startAuction(nextRoom, retroCard);
+            this.updateRoom(roomId, nextRoom);
             this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+            this.broadcastState(roomId);
+            return;
           }
         }
         break;
@@ -196,29 +205,42 @@ export class RoomManager {
         nextRoom = applyBuy(active.room, intent.carId);
         nextRoom = advanceTurn(nextRoom, false);
         break;
-      case "repair":
+      case "repair": {
         const car = active.room.players
           .find((p) => p.id === playerId)
           ?.cars.find((c) => c.id === intent.carId);
         const roll = car?.defect.kind === "roll" ? d6() : 0;
         nextRoom = applyRepair(active.room, intent.carId, roll);
+        rolled = roll;
         break;
+      }
       case "buyout":
         nextRoom = applyBuyout(active.room, intent.carId);
         nextRoom = advanceTurn(nextRoom, false);
+        break;
+      case "scrap":
+        nextRoom = applyScrap(active.room, intent.carId);
+        if (active.room.phase.name === "resolve_cell" && active.room.phase.cell === "buyout") {
+          nextRoom = advanceTurn(nextRoom, false);
+        }
         break;
       case "rent":
         nextRoom = applyRent(active.room);
         nextRoom = advanceTurn(nextRoom, false);
         break;
-      case "taxi":
-        nextRoom = applyTaxi(active.room, intent.carId, d6());
+      case "taxi": {
+        const roll = d6();
+        nextRoom = applyTaxi(active.room, intent.carId, roll);
         nextRoom = advanceTurn(nextRoom, false);
+        rolled = roll;
         break;
+      }
       case "bid":
         nextRoom = applyBid(active.room, playerId, intent.step);
+        this.updateRoom(roomId, nextRoom);
         this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
-        break;
+        this.broadcastState(roomId);
+        return;
       case "pass":
         if (active.room.phase.name === "auction") {
           const res = applyAuctionPass(active.room, playerId);
@@ -226,7 +248,10 @@ export class RoomManager {
           if (res.ended) {
             nextRoom = advanceTurn(nextRoom, false);
           } else {
+            this.updateRoom(roomId, nextRoom);
             this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+            this.broadcastState(roomId);
+            return;
           }
         } else if (active.room.phase.name === "race" && active.room.phase.state.status === "pool_entry") {
           // Pass on pool entry
@@ -237,12 +262,16 @@ export class RoomManager {
         break;
       case "race_invite":
         nextRoom = inviteRace(active.room, playerId, intent.targetId, intent.stake);
+        this.updateRoom(roomId, nextRoom);
         this.scheduleTurnTimer(roomId, 10);
-        break;
+        this.broadcastState(roomId);
+        return;
       case "race_accept":
         nextRoom = acceptRace(active.room, playerId);
+        this.updateRoom(roomId, nextRoom);
         this.scheduleTurnTimer(roomId, RACE_POOL_TIMEOUT_SEC);
-        break;
+        this.broadcastState(roomId);
+        return;
       case "race_forfeit":
         nextRoom = forfeitRace(active.room, playerId);
         nextRoom = advanceTurn(nextRoom, false);
@@ -250,21 +279,87 @@ export class RoomManager {
       case "race_join_pool":
         nextRoom = joinRacePool(active.room, playerId);
         break;
-      case "loan_offer":
+      case "start_auction":
+        if (active.room.phase.name === "resolve_cell" && active.room.phase.cell === "picker") {
+          const { decks, discards } = recycleDeck(active.room.decks, active.room.discards, "retro");
+          const roomWithDecks = { ...active.room, decks, discards };
+          const retroCard = roomWithDecks.decks.retro[0];
+          if (retroCard) {
+            nextRoom = {
+              ...roomWithDecks,
+              decks: { ...roomWithDecks.decks, retro: roomWithDecks.decks.retro.slice(1) },
+            };
+            nextRoom = startAuction(nextRoom, retroCard);
+            this.updateRoom(roomId, nextRoom);
+            this.scheduleTurnTimer(roomId, AUCTION_TIMEOUT_SEC);
+            this.broadcastState(roomId);
+            return;
+          }
+        }
+        break;
+      case "loan_offer": {
+        const lender = active.room.players.find((p) => p.id === playerId);
+        const borrower = active.room.players.find((p) => p.id === intent.targetId);
+        if (!lender || !borrower) throw new RuleError("player not found");
+        if (lender.id === borrower.id) throw new RuleError("cannot loan to self");
+        if (borrower.bankrupt) throw new RuleError("target is bankrupt");
+        if (!canPay(lender.cash, intent.principal)) throw new RuleError("lender lacks cash");
+        if (intent.turns < 1) throw new RuleError("turns must be >= 1");
+        if (intent.due < intent.principal) throw new RuleError("due must be >= principal");
+
+        nextRoom = {
+          ...active.room,
+          pendingLoan: {
+            id: `loan_${Date.now()}`,
+            lenderId: playerId,
+            borrowerId: intent.targetId,
+            principal: intent.principal,
+            due: intent.due,
+            turns: intent.turns,
+          },
+          updatedAt: Date.now(),
+        };
+        break;
+      }
+      case "loan_accept": {
+        if (!active.room.pendingLoan) throw new RuleError("no pending loan");
+        if (active.room.pendingLoan.borrowerId !== playerId) throw new RuleError("not target borrower");
+        const pLoan = active.room.pendingLoan;
         nextRoom = grantLoan(
           active.room,
-          playerId,
-          intent.targetId,
-          intent.principal,
-          intent.due,
-          intent.turns,
+          pLoan.lenderId,
+          pLoan.borrowerId,
+          pLoan.principal,
+          pLoan.due,
+          pLoan.turns,
         );
+        nextRoom = {
+          ...nextRoom,
+          pendingLoan: null,
+        };
         break;
+      }
+      case "loan_reject": {
+        if (!active.room.pendingLoan) throw new RuleError("no pending loan");
+        if (
+          active.room.pendingLoan.borrowerId !== playerId &&
+          active.room.pendingLoan.lenderId !== playerId
+        ) {
+          throw new RuleError("not authorized to reject loan");
+        }
+        nextRoom = {
+          ...active.room,
+          pendingLoan: null,
+          updatedAt: Date.now(),
+        };
+        break;
+      }
       default:
         throw new RuleError(`unsupported intent: ${(intent as any).type}`);
     }
 
     this.updateRoom(roomId, nextRoom);
+    if (rolled !== undefined) return { rolled };
   }
 
   private updateRoom(roomId: string, nextRoom: Room): void {
@@ -273,15 +368,17 @@ export class RoomManager {
     const oldTurn = active.room.turn;
     const turnChanged = nextRoom.turn !== oldTurn || nextRoom.phase.name === "finished";
 
-    active.room = nextRoom;
+    const timerExpiresAt = nextRoom.timerExpiresAt ?? active.room.timerExpiresAt;
+    active.room = { ...nextRoom, timerExpiresAt };
 
     if (turnChanged) {
       if (this.db) {
-        saveRoom(this.db, nextRoom);
+        saveRoom(this.db, active.room);
       }
       if (nextRoom.phase.name === "finished") {
         if (active.timer) clearTimeout(active.timer);
         active.timer = null;
+        active.room = { ...active.room, timerExpiresAt: undefined };
       } else {
         this.scheduleTurnTimer(roomId, TURN_TIMEOUT_SEC);
       }
@@ -294,6 +391,9 @@ export class RoomManager {
     const active = this.rooms.get(roomId);
     if (!active) return;
     if (active.timer) clearTimeout(active.timer);
+
+    const timerExpiresAt = Date.now() + seconds * 1000;
+    active.room = { ...active.room, timerExpiresAt };
 
     active.timer = setTimeout(() => {
       this.handleTurnTimeout(roomId);
@@ -326,10 +426,24 @@ export class RoomManager {
         return;
       }
       if (active.room.phase.state.status === "pool_entry") {
-        // Pool entry closed: roll dice and resolve race
-        const { room: nextRoom } = resolveRace(active.room, d6);
-        this.updateRoom(roomId, advanceTurn(nextRoom, false));
+        // Pool entry closed: start rolling
+        const step = stepRaceRoll(active.room, d6);
+        this.updateRoom(roomId, step.room);
+        this.scheduleTurnTimer(roomId, 3);
         return;
+      }
+      if (active.room.phase.state.status === "rolling") {
+        if (active.room.phase.state.tieContenders && active.room.phase.state.tieContenders.length > 1) {
+          // Tie-break reroll between tied contenders
+          const step = stepRaceRoll(active.room, d6);
+          this.updateRoom(roomId, step.room);
+          this.scheduleTurnTimer(roomId, 3);
+          return;
+        } else {
+          // Concluded, advance turn
+          this.updateRoom(roomId, advanceTurn(active.room, false));
+          return;
+        }
       }
     }
 

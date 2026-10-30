@@ -4,6 +4,10 @@ import { euro } from "./money.ts";
 import { applyAuctionPass, applyBid, concludeAuction, startAuction } from "./auction.ts";
 import { acceptRace, forfeitRace, inviteRace, joinRacePool, resolveRace } from "./race.ts";
 import { grantLoan, processPlayerLoansAtTurnEnd } from "./loans.ts";
+import { applyBuy, applyScrap } from "./actions.ts";
+import { stepRaceRoll } from "./race.ts";
+import { recycleDeck } from "./decks.ts";
+import { advanceTurn } from "./turn.ts";
 import type { Car, Player, Room } from "./types.ts";
 
 const makeCar = (over: Partial<Car> = {}): Car => ({
@@ -140,4 +144,153 @@ test("loans: grant, turn countdown, default triggers penalty and collection", ()
   assert.equal(p1After?.cash, euro(10_500)); // 8000 + 2500
   assert.equal(p2After?.cash, euro(9_500)); // 12000 - 2500
   assert.equal(p2After?.loans.length, 0);
+});
+
+test("picker allows buying from any non-retro deck", () => {
+  const beatenCar = makeCar({ id: "beaten_1", class: "beaten", purchase: euro(2_000) });
+  const room = makeRoom({
+    phase: { name: "resolve_cell", cell: "picker" },
+    decks: { bucket: [], beaten: [beatenCar], premium: [], retro: [] },
+  });
+
+  const bought = applyBuy(room, "beaten_1");
+  const p1 = bought.players.find((p) => p.id === "p1");
+  assert.equal(p1?.cash, euro(8_000));
+  assert.equal(p1?.cars.length, 2);
+  assert.equal(p1?.cars[1]?.id, "beaten_1");
+});
+
+test("scrap: broken car scrapped on service or buyout for 50 € frees slot; ready car rejected", () => {
+  const brokenCar = makeCar({ id: "broken_1", class: "bucket", status: "broken" });
+  const readyCar = makeCar({ id: "ready_1", class: "bucket", status: "ready" });
+  const room = makeRoom({
+    phase: { name: "resolve_cell", cell: "service" },
+    players: [
+      {
+        id: "p1",
+        name: "P1",
+        cash: euro(100),
+        position: 5,
+        cars: [brokenCar, readyCar],
+        loans: [],
+        missedLaps: 0,
+        bankrupt: false,
+        turnCount: 0,
+      },
+      {
+        id: "p2",
+        name: "P2",
+        cash: euro(1000),
+        position: 0,
+        cars: [],
+        loans: [],
+        missedLaps: 0,
+        bankrupt: false,
+        turnCount: 0,
+      },
+    ],
+  });
+
+  // Ready car cannot be scrapped
+  assert.throws(() => applyScrap(room, "ready_1"), /only broken cars can be scrapped/);
+
+  // Broken car scrapped on service
+  const scrapped = applyScrap(room, "broken_1");
+  const p1 = scrapped.players.find((p) => p.id === "p1");
+  assert.equal(p1?.cash, euro(150)); // 100 + 50
+  assert.equal(p1?.cars.length, 1);
+  assert.equal(scrapped.discards.bucket.length, 1);
+  assert.equal(scrapped.discards.bucket[0]?.id, "broken_1");
+});
+
+test("elimination victory: when remaining non-bankrupt players === 1, sole survivor wins immediately", () => {
+  const room = makeRoom({
+    turn: 0,
+    players: [
+      {
+        id: "p1",
+        name: "P1",
+        cash: euro(500),
+        position: 0,
+        cars: [],
+        loans: [],
+        missedLaps: 2,
+        bankrupt: false,
+        turnCount: 0,
+      },
+      {
+        id: "p2",
+        name: "P2",
+        cash: euro(1_000),
+        position: 1,
+        cars: [],
+        loans: [],
+        missedLaps: 0,
+        bankrupt: false,
+        turnCount: 0,
+      },
+      {
+        id: "p3",
+        name: "P3",
+        cash: euro(0),
+        position: 2,
+        cars: [],
+        loans: [],
+        missedLaps: 3,
+        bankrupt: true,
+        turnCount: 0,
+      },
+    ],
+  });
+
+  // P1 times out on lap 3 -> becomes bankrupt -> only P2 remains
+  const afterTurn = advanceTurn(room, true);
+  assert.equal(afterTurn.phase.name, "finished");
+  if (afterTurn.phase.name === "finished") {
+    assert.equal(afterTurn.phase.winnerId, "p2");
+  }
+});
+
+test("deck recycling: empty deck reshuffles discard pile into new deck", () => {
+  const discardedCar = makeCar({ id: "disc_1", status: "ready" });
+  const decks = { bucket: [], beaten: [], premium: [], retro: [] };
+  const discards = { bucket: [discardedCar], beaten: [], premium: [], retro: [] };
+
+  const recycled = recycleDeck(decks, discards, "bucket");
+  assert.equal(recycled.decks.bucket.length, 1);
+  assert.equal(recycled.discards.bucket.length, 0);
+  assert.equal(recycled.decks.bucket[0]?.id, "disc_1");
+  // Defect status reset to broken (since defect is not perfect)
+  assert.equal(recycled.decks.bucket[0]?.status, "broken");
+});
+
+test("race tie-break: equal highest roll triggers reroll micro-phase between leaders", () => {
+  const room = makeRoom({
+    phase: {
+      name: "race",
+      state: {
+        initiatorId: "p1",
+        targetId: "p2",
+        stake: euro(500),
+        pool: euro(2_000),
+        status: "pool_entry",
+        participants: ["p1", "p2", "p3"],
+      },
+    },
+  });
+
+  // Round 1: p1 rolls 5, p2 rolls 5, p3 rolls 2 -> tie between p1 and p2
+  let step1CallCount = 0;
+  const s1 = stepRaceRoll(room, () => [5, 5, 2][step1CallCount++] || 1);
+  assert.equal(s1.isTie, true);
+  assert.deepEqual(s1.tieContenders, ["p1", "p2"]);
+  assert.equal(s1.winnerId, undefined);
+
+  // Round 2: reroll between tieContenders (p1 and p2): p1 rolls 3, p2 rolls 6 -> p2 wins
+  let step2CallCount = 0;
+  const s2 = stepRaceRoll(s1.room, () => [3, 6][step2CallCount++] || 1);
+  assert.equal(s2.isTie, false);
+  assert.equal(s2.winnerId, "p2");
+  const p2 = s2.room.players.find((p) => p.id === "p2");
+  assert.equal(p2?.cash, euro(12_000)); // 10000 + 2000
 });

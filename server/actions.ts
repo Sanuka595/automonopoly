@@ -1,7 +1,8 @@
-import { add, canPay, RENT_PAY, sub, TAXI_MULT, type Euro } from "./money.ts";
+import { add, canPay, euro, RENT_PAY, sub, TAXI_MULT, type Euro } from "./money.ts";
 import { TRACK_LEN, type Cell } from "./track.ts";
 import { GARAGE_CAP, type Car, type CarClass, type Player, type Room } from "./types.ts";
 import { RuleError, hasOverdueDebt } from "./turn.ts";
+import { recycleDeck } from "./decks.ts";
 
 const seat = (room: Room): Player => {
   const player = room.players[room.turn];
@@ -32,6 +33,9 @@ const repairCost = (car: Car, roll: number): Euro => {
     if (!Number.isInteger(roll) || roll < 1 || roll > 6) throw new RuleError("d6 out of range");
     return car.defect.multiplier * BigInt(roll);
   }
+  if (car.defect.kind === "raspil") {
+    return car.defect.repair ?? euro(300);
+  }
   throw new RuleError("nothing to repair");
 };
 
@@ -51,6 +55,26 @@ export const applyRepair = (room: Room, carId: string, roll = 0): Room => {
 };
 
 const buyoutPay = (car: Car): Euro => (car.defect.kind === "raspil" ? car.purchase : car.buyout);
+
+export const SCRAP_PAY = euro(50);
+
+/** Scraps a broken car for 50 € to free up garage slot. Allowed on service or buyout cells. */
+export const applyScrap = (room: Room, carId: string): Room => {
+  if (room.phase.name !== "resolve_cell" || (room.phase.cell !== "service" && room.phase.cell !== "buyout")) {
+    throw new RuleError("scrap only on service or buyout");
+  }
+  const player = seat(room);
+  const car = ownCar(player, carId);
+  if (car.status !== "broken") throw new RuleError("only broken cars can be scrapped");
+  return {
+    ...replace(room, {
+      ...player,
+      cash: add(player.cash, SCRAP_PAY),
+      cars: player.cars.filter((c) => c.id !== carId),
+    }),
+    discards: { ...room.discards, [car.class]: [...room.discards[car.class], car] },
+  };
+};
 
 /** ready and in_rent both sell. broken does not. Frees the garage slot. */
 export const applyBuyout = (room: Room, carId: string): Room => {
@@ -107,24 +131,37 @@ export const applyBuy = (room: Room, carId: string): Room => {
   const player = seat(room);
   if (hasOverdueDebt(player)) throw new RuleError("overdue debt blocks buying");
   if (player.cars.length >= GARAGE_CAP) throw new RuleError("garage full");
-  const deckKey: Partial<Record<Cell, CarClass>> = {
-    buckets: "bucket",
-    beaten: "beaten",
-    premium: "premium",
-  };
-  const key = deckKey[room.phase.cell];
+  let key: CarClass | undefined;
+  if (room.phase.cell === "picker") {
+    for (const [k, d] of Object.entries(room.decks) as [CarClass, Car[]][]) {
+      if (k !== "retro" && d.some((c) => c.id === carId)) {
+        key = k;
+        break;
+      }
+    }
+  } else {
+    const deckKey: Partial<Record<Cell, CarClass>> = {
+      buckets: "bucket",
+      beaten: "beaten",
+      premium: "premium",
+    };
+    key = deckKey[room.phase.cell];
+  }
   if (key === undefined) throw new RuleError("cell has no deck");
   const deck = room.decks[key];
   const car = deck.find((c) => c.id === carId);
   if (!car) throw new RuleError("car not on offer");
   if (!canPay(player.cash, car.purchase)) throw new RuleError("cannot pay purchase");
   const bought: Car = { ...car, status: car.defect.kind === "perfect" ? "ready" : "broken" };
+  const newDecks = { ...room.decks, [key]: deck.filter((c) => c.id !== carId) };
+  const { decks, discards } = recycleDeck(newDecks, room.discards, key);
   return {
     ...replace(room, {
       ...player,
       cash: sub(player.cash, car.purchase),
       cars: [...player.cars, bought],
     }),
-    decks: { ...room.decks, [key]: deck.filter((c) => c.id !== carId) },
+    decks,
+    discards,
   };
 };

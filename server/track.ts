@@ -14,7 +14,6 @@ export type Cell = (typeof CELLS)[number];
 export const TRACK_LEN = CELLS.length;
 export const MAX_STEP = 4;
 export const FREE_STEPS = 2;
-export const CELL_CAP = 2;
 
 export const cellAt = (index: number): Cell => {
   const cell = CELLS[((index % TRACK_LEN) + TRACK_LEN) % TRACK_LEN];
