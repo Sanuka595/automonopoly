@@ -11,7 +11,8 @@ import { applyBid, applyAuctionPass, startAuction, AUCTION_TIMEOUT_SEC } from ".
 import { inviteRace, acceptRace, forfeitRace, joinRacePool, stepRaceRoll, RACE_POOL_TIMEOUT_SEC } from "./race.ts";
 import { recycleDeck } from "./decks.ts";
 import { grantLoan } from "./loans.ts";
-import { MAX_PLAYERS, MIN_PLAYERS, type Intent, type Room } from "./types.ts";
+import { normalizeIntent } from "./validation.ts";
+import { MAX_PLAYERS, MIN_PLAYERS, type Room } from "./types.ts";
 
 export type LobbyUser = { id: string; name: string; socketId: string };
 
@@ -77,13 +78,13 @@ export class RoomManager {
       }
     });
 
-    socket.on("intent", (intent: Intent, ack?: (res: any) => void) => {
+    socket.on("intent", (raw: unknown, ack?: (res: any) => void) => {
       if (!authUser || !currentRoomId) {
         if (ack) ack({ ok: false, error: "unauthenticated" });
         return;
       }
       try {
-        const res = this.handleIntent(currentRoomId, authUser.id, intent);
+        const res = this.handleIntent(currentRoomId, authUser.id, raw);
         if (ack) ack({ ok: true, ...(res || {}) });
       } catch (err: any) {
         if (ack) ack({ ok: false, error: err.message });
@@ -172,9 +173,10 @@ export class RoomManager {
     return room;
   }
 
-  public handleIntent(roomId: string, playerId: string, intent: Intent): { rolled?: number } | void {
+  public handleIntent(roomId: string, playerId: string, raw: unknown): { rolled?: number } | void {
     const active = this.rooms.get(roomId);
     if (!active) throw new RuleError("room not found");
+    const intent = normalizeIntent(raw);
     assertIntent(active.room, playerId, intent);
 
     let nextRoom = active.room;
