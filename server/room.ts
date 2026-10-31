@@ -5,7 +5,7 @@ import { verifyInitData } from "./auth.ts";
 import { initGame } from "./decks.ts";
 import { applyBuy, applyBuyout, applyRent, applyRepair, applyScrap, applyTaxi } from "./actions.ts";
 import { d6 } from "./rng.ts";
-import { saveRoom, serializeRoom } from "./snapshot.ts";
+import { saveRoom, serializeRoom, loadRooms } from "./snapshot.ts";
 import { advanceTurn, applyAutoTurn, applyMove, assertIntent, RuleError, TURN_TIMEOUT_SEC, DISCONNECT_TIMEOUT_SEC, DISCONNECT_GRACE_SEC } from "./turn.ts";
 import { applyBid, applyAuctionPass, startAuction, AUCTION_TIMEOUT_SEC } from "./auction.ts";
 import { inviteRace, acceptRace, forfeitRace, joinRacePool, stepRaceRoll, RACE_POOL_TIMEOUT_SEC } from "./race.ts";
@@ -39,6 +39,30 @@ export class RoomManager {
 
   public getRoom(roomId: string): Room | null {
     return this.rooms.get(roomId)?.room ?? null;
+  }
+
+  /** Restores rooms saved by a previous server run. Call once at startup, before any socket connects. */
+  public loadPersistedRooms(): void {
+    if (!this.db) return;
+    for (const room of loadRooms(this.db)) {
+      this.rooms.set(room.id, {
+        room,
+        timer: null,
+        disconnectTimers: new Map(),
+        activeSockets: new Map(),
+      });
+      if (room.phase.name === "finished") continue;
+
+      // Resume the clock: an expired saved timer fires the auto-turn now, otherwise
+      // schedule for the remaining window (fresh timer when none was saved).
+      const expiresAt = room.timerExpiresAt;
+      const remainingSec = expiresAt === undefined ? 0 : (expiresAt - Date.now()) / 1000;
+      if (remainingSec > 0) {
+        this.scheduleTurnTimer(room.id, Math.ceil(remainingSec));
+      } else {
+        this.handleTurnTimeout(room.id);
+      }
+    }
   }
 
   public getLobby(roomId: string): LobbyUser[] {

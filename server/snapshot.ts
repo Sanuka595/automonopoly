@@ -10,6 +10,9 @@ const schema = `
 
 export const openDb = (path: string): DatabaseSync => {
   const db = new DatabaseSync(path);
+  // WAL: readers don't block the writer; busy_timeout: wait out lock contention.
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(schema);
   return db;
 };
@@ -38,5 +41,15 @@ export const serializeRoom = (room: Room): any =>
 
 export const loadRooms = (db: DatabaseSync): Room[] =>
   db.prepare("SELECT state FROM rooms").all().map((row) => decode(String(row.state)));
+
+/** TTL sweep: drops rooms untouched for maxAgeMs. Returns the number of rows removed. */
+export const cleanupOldRooms = (
+  db: DatabaseSync,
+  maxAgeMs = 24 * 60 * 60 * 1000,
+): number => {
+  const cutoff = Date.now() - maxAgeMs;
+  const res = db.prepare("DELETE FROM rooms WHERE updated_at < ?").run(cutoff);
+  return Number(res.changes);
+};
 
 

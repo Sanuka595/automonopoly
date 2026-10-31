@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import process from "node:process";
 import { Server } from "socket.io";
-import { openDb } from "./snapshot.ts";
+import { openDb, cleanupOldRooms } from "./snapshot.ts";
 import { RoomManager } from "./room.ts";
 
 // Load .env if present (native Node.js)
@@ -99,6 +99,10 @@ const io = new Server(httpServer, {
 
 const db = openDb(SQLITE_PATH);
 const manager = new RoomManager(io, db, BOT_TOKEN);
+manager.loadPersistedRooms();
+
+// TTL sweep of abandoned rooms; unref keeps the interval from holding the process open.
+setInterval(() => cleanupOldRooms(db), 3600_000).unref();
 
 io.on("connection", (socket) => {
   manager.registerSocket(socket);
