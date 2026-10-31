@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { euro } from "./money.ts";
 import type { Player, Room } from "./types.ts";
-import { applyMove, assertIntent, RuleError } from "./turn.ts";
+import { applyAutoTurn, applyMove, assertIntent, RuleError } from "./turn.ts";
 
 const player = (over: Partial<Player> = {}): Player => ({
   id: "a",
@@ -74,4 +74,35 @@ test("a move adds the walked steps to a rented car", () => {
   assert.equal(next.players[0]?.position, 0);
   assert.equal(next.players[0]?.cars[0]?.status, "in_rent");
   assert.equal(next.players[0]?.cars[0]?.rentSteps, 1);
+});
+
+test("auto-turn earns taxi with the eligible car's multiplier, not cars[0]", () => {
+  const retroFirst = player({
+    cars: [
+      {
+        id: "r1",
+        class: "retro",
+        purchase: euro(700),
+        buyout: euro(900),
+        defect: { kind: "perfect" },
+        status: "ready",
+        taxiMult: euro(0),
+      },
+      {
+        id: "b1",
+        class: "bucket",
+        purchase: euro(400),
+        buyout: euro(600),
+        defect: { kind: "perfect" },
+        status: "ready",
+        taxiMult: euro(50),
+      },
+    ],
+  });
+  const resolving = room({
+    players: [retroFirst, player({ id: "b", position: 3 })],
+    phase: { name: "resolve_cell", cell: "rent" },
+  });
+  const next = applyAutoTurn(resolving, 3);
+  assert.equal(next.players[0]?.cash, euro(1_750)); // 1600 + 50 * 3, cars[0] retro pays nothing
 });

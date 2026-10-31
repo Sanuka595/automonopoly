@@ -173,7 +173,7 @@ export const applyAutoTurn = (
   const player = seat(room);
   const taxiCar = player.cars.find((c) => c.class !== "retro");
   if (taxiCar) {
-    const mult = player.cars[0]?.taxiMult ?? 0n;
+    const mult = taxiCar.taxiMult ?? 0n;
     if (mult > 0n) {
       const earned = mult * BigInt(taxiRoll);
       const updated = { ...player, cash: player.cash + earned };
