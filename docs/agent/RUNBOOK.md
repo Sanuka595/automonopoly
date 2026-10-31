@@ -10,18 +10,18 @@ cd ~/Projects/tachka
 PORT=3999 SQLITE_PATH=/tmp/n1-docs.sqlite npm start
 ```
 
-- Первая строка осмысленного вывода: `Server listening on port 3999` (код возврата процесса 0, пока жив; печатает `server/index.ts:108`).
-- Если `BOT_TOKEN` пуст, перед этим в логе: `WARNING: BOT_TOKEN is empty. InitData verification will fail.` (`server/index.ts:19-21`). Без токена сокет-`auth` отклонит подключение с `initData: bad hash`.
-- Переменные (`server/index.ts:15-17`): `PORT` (по умолчанию 3005), `SQLITE_PATH` (по умолчанию `./tachka.sqlite` — не открывать боевой файл), `BOT_TOKEN` (подхватывается из `.env` через `process.loadEnvFile`, `server/index.ts:11-13`).
+- Первая строка осмысленного вывода: `Server listening on port 3999` (код возврата процесса 0, пока жив; печатает `server/index.ts:59-61`).
+- Если `BOT_TOKEN` пуст, перед этим в логе: `WARNING: BOT_TOKEN is empty. InitData verification will fail.` (`server/index.ts:18-20`). Без токена сокет-`auth` отклонит подключение с `initData: bad hash`.
+- Переменные (`server/index.ts:14-16` и `server/index.ts:22-28`): `PORT` (по умолчанию 3005), `SQLITE_PATH` (по умолчанию `./tachka.sqlite` — не открывать боевой файл), `BOT_TOKEN` (подхватывается из `.env` через `process.loadEnvFile`, `server/index.ts:10-12`), `NODE_ENV=production` (вкл. прод-режим периметра), `DEV_TOKEN=1` (разрешить `/dev/token` даже в проде), `ALLOWED_ORIGINS` (CORS-белый список через запятую; в dev localhost разрешён без неё — `server/http.ts:33-39`).
 
 ## Проверка живости и dev-токен
 
 ```bash
 curl -s http://127.0.0.1:3999/health
-# → {"ok":true,"uptime":1.944622618}   (HTTP 200; эндпоинт: server/index.ts:46-50)
+# → {"ok":true,"uptime":1.944622618}   (HTTP 200; эндпоинт: server/http.ts:80-84)
 
 curl -s "http://127.0.0.1:3999/dev/token?id=1&name=Player1"
-# → {"initData":"auth_date=…&user=…&hash=…"}   (server/index.ts:52-58)
+# → {"initData":"auth_date=…&user=…&hash=…"}   (server/http.ts:86-97)
 ```
 
 `/dev/token` подписывает initData **реальным** `BOT_TOKEN` из окружения — годится для
@@ -32,7 +32,7 @@ curl -s "http://127.0.0.1:3999/dev/token?id=1&name=Player1"
 
 ```bash
 npm test
-# хвост вывода: "ℹ tests 33 … ℹ pass 33 … ℹ fail 0"; exit 0
+# хвост вывода: "ℹ tests 53 … ℹ pass 53 … ℹ fail 0"; exit 0
 
 npm run typecheck
 # вывод пуст (tsc --noEmit молчит), exit 0
@@ -52,7 +52,7 @@ node --experimental-strip-types --test server/track.test.ts
 
 ```bash
 cd client && npm run build
-# tsc -b + vite build → client/dist/ (раздаётся сервером, server/index.ts:61-72)
+# tsc -b + vite build → client/dist/ (раздаётся сервером, server/http.ts:100-126)
 ```
 
 Для разработки: `cd client && npm run dev` — Vite на 5173 с прокси `/socket.io`,
@@ -68,7 +68,7 @@ cd client && npm run build
 | `initData: expired` | строке initData больше 3600 с (`server/auth.ts:15`) | перезайти в Mini App / перезапросить `/dev/token` |
 | БД залочена / падение на open | старый процесс держит файл | убить процесс; для экспериментов всегда отдельный `SQLITE_PATH=/tmp/…` |
 | Клиент «Нет связи со столом» (`client/src/api/useGame.ts:56-59`) | сервер не поднят или `VITE_SERVER_URL` при сборке указал не туда | поднять сервер; при сборке задать `VITE_SERVER_URL` (читается в `client/src/api/socket.ts:4`); в dev работает прокси vite |
-| Комната «пропала» после рестарта сервера | восстановление не подключено — это известный разрыв, FINDINGS-5 | не баговать: начать партию заново |
+| Комната «пропала» после рестарта сервера | до T1-core восстановления не было; теперь `loadPersistedRooms` поднимает комнаты из SQLite (`server/room.ts:45-70`) | если комната всё же пропала — проверь `SQLITE_PATH`: тот же ли файл, и не старше ли она 24 ч (TTL `cleanupOldRooms`) |
 
 ## Посмотреть состояние комнаты
 
@@ -76,6 +76,6 @@ cd client && npm run build
 
 - лог сервера — только `Server listening …` и warning про токен; логов интентов нет;
 - во время разработки: `console.log(manager.getRoom('room1'))` — публичный геттер есть
-  (`server/room.ts:39-41`), тесты именно так и делают (`server/room.test.ts:109-119`);
+  (`server/room.ts:40-42`), тесты именно так и делают (`server/room.test.ts:109-119`);
 - SQLite-снимок: `sqlite3 /tmp/n1-docs.sqlite "select state from rooms"` — JSON комнаты
   с деньгами в виде `{"$euro":"1600"}`.

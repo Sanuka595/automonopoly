@@ -8,11 +8,12 @@
 | `state` | TEXT | полный JSON `Room`; bigint-деньги обёрнуты в `{"$euro": "1600"}` (`server/snapshot.ts:18-24`) |
 | `updated_at` | INTEGER | `room.updatedAt` (мс) |
 
-Запись — upsert в `saveRoom` (`server/snapshot.ts:27-32`), вызывается из
-`updateRoom` **только при смене хода или финише** (`server/room.ts:368-377`) —
-не на каждый клик. Чтение — `loadRooms` (`server/snapshot.ts:39-40`), но
-**в `index.ts` оно не вызывается**: после рестарта комнаты не восстанавливаются
-(FINDINGS-5, расходится с `RULES.md:271`).
+Запись — upsert в `saveRoom` (`server/snapshot.ts:30-35`), вызывается из
+`updateRoom` **только при смене хода или финише** (`server/room.ts:394-403`) —
+не на каждый клик. Чтение — `loadRooms` (`server/snapshot.ts:42-43`) при старте
+сервера: `loadPersistedRooms` восстанавливает комнаты и перезапускает таймеры
+(`server/room.ts:45-66`, вызов `server/index.ts:50`; подключено в T1-core,
+FINDINGS-5).
 
 ## Логические сущности внутри JSON комнаты
 
@@ -47,7 +48,7 @@ erDiagram
   статус сбрасывается в `broken` (или `ready` для perfect), `rentSteps: 0`
   (`server/decks.ts:154-166`).
 - `pendingLoan?: PendingLoan | null` — оффер P2P-займа (`server/types.ts:79-86`).
-- `timerExpiresAt?: number` — мс; выставляется `scheduleTurnTimer` (`server/room.ts:390-401`),
+- `timerExpiresAt?: number` — мс; выставляется `scheduleTurnTimer` (`server/room.ts:416-427`),
   попадает в `room:state`, клиент показывает обратный отсчёт со скью по `updatedAt`
   (`client/src/components/auction/AuctionModal.tsx:17-35`).
 - `updatedAt: number` — штамп изменений.
@@ -95,14 +96,15 @@ rolling` с тайбрейк-перебросками (`server/race.ts:152-210`,
 | Лобби (`this.lobbies`) | только RAM, `server/room.ts:30` | до старта матча сохранять нечего; рестарт сервера = лобби собирается заново |
 | `timerExpiresAt`-таймер (`NodeJS.Timeout`) | `active.timer`, RAM (`server/room.ts:20`) | таймер пересоздаётся при следующем событии; в JSON уходит только метка времени |
 | `disconnectTimers`, `activeSockets` | RAM (`server/room.ts:21-22`) | привязаны к живым сокетам |
-| Мид-ходовые изменения (ставки аукциона, входы в пул, ремонты) | в RAM до конца хода | снимок пишется только на границе хода (`server/room.ts:368-377`); падение сервера посреди хода откатывает комнату к последней границе |
+| Мид-ходовые изменения (ставки аукциона, входы в пул, ремонты) | в RAM до конца хода | снимок пишется только на границе хода (`server/room.ts:394-403`); падение сервера посреди хода откатывает комнату к последней границе |
 
-Противоречие с `RULES.md:270-271`: заявлены сохранение по `end_turn/auction_end/race_end`
-и восстановление после рестарта; фактически — сохранение по смене `turn`
-(`server/room.ts:368-377`) и `loadRooms` не подключён (FINDINGS-5, FINDINGS-15).
+Противоречие с `RULES.md:270-271`: сохранение фактически — по смене `turn`
+(`server/room.ts:394-403`), не по `end_turn/auction_end/race_end` (FINDINGS-15);
+восстановление после рестарта с T1-core работает (`server/room.ts:45-66`),
+WAL и busy_timeout включены в `openDb` (`server/snapshot.ts:13-15`).
 
 ## Сериализация в сеть
 
-`serializeRoom` (`server/snapshot.ts:34-37`) превращает все bigint в строки —
+`serializeRoom` (`server/snapshot.ts:37-40`) превращает все bigint в строки —
 поэтому клиентский контракт (`client/src/api/types.ts:1-2`) требует `string` для денег.
 Обратное преобразование на клиент не возвращается: клиент не считает деньги.

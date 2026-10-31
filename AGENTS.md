@@ -8,7 +8,7 @@ socket.io, TypeScript исполняется напрямую (`node --experimen
 
 ```bash
 npm start                 # сервер на :3005; PORT=3999 SQLITE_PATH=/tmp/x.sqlite npm start — для отладки
-npm test                  # node --test, 8 файлов / 33 теста
+npm test                  # node --test, 10 файлов / 53 теста
 npm run typecheck         # tsc --noEmit
 node --experimental-strip-types --test server/track.test.ts   # один файл
 cd client && npm run dev  # vite :5173 с прокси на :3005
@@ -23,14 +23,14 @@ env сервера: `PORT` (3005), `SQLITE_PATH` (`./tachka.sqlite`), `BOT_TOKEN
 `lobby:update`. Полный протокол: `docs/agent/PROTOCOL.md`. Карта всех модулей:
 `docs/agent/MAP.md`. Хранение и фазы: `docs/agent/DATA-MODEL.md`. Известные разрывы
 кода и документации — `docs/agent/FINDINGS.md` (прочитай перед изменением аукциона,
-займов и гонок: там строки-vs-bigint и отсутствующие UI).
+займов и гонок: FINDINGS-1/2/3/5/11 решены в T1-core, остальное актуально).
 
 ## Нестандартные правила кода (не выводятся из окружения)
 
 1. **Деньги — `Euro = bigint` из `server/money.ts`;** создаётся фабрикой `euro()`,
    складывается/вычитается только `add`/`sub`/`canPay`. По сети и в SQLite суммы —
-   строки (`"1600"`, обёртка `{"$euro":…}`); входящие от клиента строки на границе
-   сокета к bigint не приводятся (известный разрыв, FINDINGS-1..3).
+   строки (`"1600"`, обёртка `{"$euro":…}`); на границе сокета вход нормализует
+   `normalizeIntent` (`server/validation.ts`) — строки/числа → bigint, форма — `RuleError`.
 2. **Игровой отказ — только `RuleError`** (`server/turn.ts:7`) с английским текстом:
    текст — часть контракта, клиент матчит его в словаре `client/src/api/present.ts`.
    Generic `throw` допустим только для нарушения внутренней целостности.

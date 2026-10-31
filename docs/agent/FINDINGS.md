@@ -3,6 +3,11 @@
 Правило задания: найденное не чинить, только записать. Нумерация стабильна, на неё
 ссылаются `INVARIANTS.md`, `DATA-MODEL.md`, `RUNBOOK.md` и ADR.
 
+**Статус после T1-core (ветка `zcode/t1-core`, вечер 2026-10-31):** FINDINGS-1, 2, 3
+(коммит `dd129d2`), FINDINGS-11 (`c094dcd`) и FINDINGS-5 (`da6f6d3`) **РЕШЕНЫ** —
+решение помечено в каждой находке. Тексты находок сохранены как записаны при аудите:
+номера строк в них — срез `ab77fbe`, если в решении не указаны свежие.
+
 ## Критичные (ломают живой клиент)
 
 **FINDINGS-1. Ставка на аукционе невозможна из живого клиента.**
@@ -10,6 +15,11 @@
 сервер ждёт bigint и сверяет с массивом bigint-шагов (`server/auction.ts:6,48`).
 `[100n,500n].includes('100')` — всегда false → `RuleError "invalid bid step"`.
 Подтверждено офлайн-пробой 2026-10-31 (node --experimental-strip-types).
+
+> **РЕШЕНО в T1-core** (`dd129d2`): `normalizeIntent` (`server/validation.ts:66`,
+> подключён в `server/room.ts:203`) приводит `step` к bigint до правил; строка
+> `'100'` → `100n`, мусор → `RuleError "invalid bid step"`. Тест:
+> `server/validation.test.ts` («a bid with a string step…»).
 
 **FINDINGS-2. P2P-займы с живого клиента считаются как строки.**
 `loan_offer` приходит с `principal/due` строками (`client/src/api/useGame.ts:211-215`).
@@ -19,6 +29,11 @@
 (`server/loans.ts:37-45`), и в `end_turn` заёмщика `add()` выполняет конкатенацию:
 `'2000' + '2000' = '20002000'` (подтверждено пробой) — взыскание долга падает.
 
+> **РЕШЕНО в T1-core** (`dd129d2`): `principal`/`due` нормализуются в bigint до
+> правил (`server/validation.ts:66`), строковое сравнение и конкатенация
+> недостижимы. Тест: `server/validation.test.ts` («a loan offer with string
+> amounts…» — проверяет и `due >= principal`, и bigint-баланс после `grantLoan`).
+
 **FINDINGS-3. Гонка с живого клиента падает на принятии.**
 `stake` приходит строкой (`client/src/api/useGame.ts:190-194`); в `acceptRace` пул
 складывается как `state.pool + state.stake` (`server/race.ts:67`) — для строк это
@@ -27,6 +42,11 @@
 (`server/room.ts:80-91` не конвертирует payload), а тип `Intent` (`server/types.ts:100-117`)
 обещает bigint. Интеграционные тесты мимо: шлют bigint напрямую
 (`server/room.test.ts:126-132`).
+
+> **РЕШЕНО в T1-core** (`dd129d2`): та же нормализация `stake` в bigint
+> (`server/validation.ts:66`); TypeError в `acceptRace` на строках недостижим.
+> Тест: `server/validation.test.ts` («a race invite with a string stake…» —
+> прогоняет нормализованный стейк через настоящий `inviteRace`).
 
 **FINDINGS-4. Интенты race_accept / race_forfeit / race_join_pool / loan_accept /
 loan_reject не имеют UI.** Они объявлены (`client/src/api/types.ts:126-132`) и есть
@@ -38,9 +58,18 @@ loan_reject не имеют UI.** Они объявлены (`client/src/api/typ
 ## Важные (расходятся с RULES.md)
 
 **FINDINGS-5. Восстановление комнат из SQLite не подключено.** `loadRooms` определён
-(`server/snapshot.ts:39-40`) и покрыт тестом, но не вызывается в `server/index.ts:100-105`.
+(`server/snapshot.ts:39-40`) и покрыт тестом, но на срезе аудита (`ab77fbe`) не
+вызывался при старте сервера.
 `RULES.md:271` обещает восстановление после рестарта — его нет; после рестарта все
 партии теряются (ло́гги тоже не пишутся).
+
+> **РЕШЕНО в T1-core** (`da6f6d3`): `RoomManager.loadPersistedRooms()`
+> (`server/room.ts:45-70`) загружает комнаты при старте (`server/index.ts:50`),
+> просроченный таймер сразу бьёт автоход, живой — пересоздаётся на остаток окна.
+> Включены WAL и busy_timeout 5000 (`server/snapshot.ts:13-15`), добавлена
+> TTL-очистка комнат старше 24 ч — `cleanupOldRooms` (`server/snapshot.ts:46-55`),
+> фоновый интервал раз в час (`server/index.ts:53`). Тесты: `server/snapshot.test.ts`
+> (WAL, TTL, рестарт, автоход при просрочке).
 
 **FINDINGS-6. Банкротство по «3 пропущенным кругам» — фактически по 3 пропущенным
 ходам.** `RULES.md:106` говорит о кругах; код увеличивает `missedLaps` на каждый
@@ -67,6 +96,11 @@ loan_reject не имеют UI.** Они объявлены (`client/src/api/typ
 `applyAutoTurn` ищет первую не-retro машину (`server/turn.ts:174`), а множитель берёт
 у `cars[0]` (`server/turn.ts:176`). Если первая машина — ретро, а вторая — вёдра,
 автоход «таксует» вёдрами с множителем 0: доход теряется.
+
+> **РЕШЕНО в T1-core** (`c094dcd`): множитель читается у найденной машины —
+> `taxiCar.taxiMult` (`server/turn.ts:176`). Регресс-тест: `server/turn.test.ts`
+> («auto-turn earns taxi with the eligible car's multiplier…» — ретро первой,
+> ведро второй, начисление 50 × бросок).
 
 ## Мелкие
 

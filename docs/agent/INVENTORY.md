@@ -1,27 +1,31 @@
 # INVENTORY — снимок проекта «Тачка» (2026-10-31)
 
 Собрано командами (`wc -l`, `grep`), не по памяти. Все ссылки проверены на существование и длину.
+Обновлён после T1-core (ветка `zcode/t1-core`): +`validation.ts`, `http.ts` и их тесты,
+восстановление комнат, WAL, TTL, прод-периметр.
 
 ## Общие факты
 
 | Параметр | Значение | Источник |
 |---|---|---|
-| Точка входа сервера | `server/index.ts` (109 строк) | `package.json:9` (`node --experimental-strip-types`) |
+| Точка входа сервера | `server/index.ts` (61 строка) | `package.json:9` (`node --experimental-strip-types`) |
 | Точка входа клиента | `client/src/main.tsx` (10 строк) → `App.tsx` | `client/package.json:7` (`vite`) |
 | Prod-зависимости корня | только `socket.io` | `package.json:14` |
 | Prod-зависимости клиента | react 19, socket.io-client, lucide-react, vaul, clsx, tailwind-merge, @telegram-apps/sdk-react (не импортируется, см. FINDINGS-14) | `client/package.json:11-19` |
 | node:sqlite | встроенный модуль Node 22+, отдельной зависимости нет | `server/snapshot.ts:1` |
-| Тесты | 8 файлов, `node --test`, 33 pass / 0 fail | `npm test` 2026-10-31 |
+| Тесты | 10 файлов, `node --test`, 53 pass / 0 fail | `npm test` 2026-10-31 (после T1-core) |
 | Typecheck | `tsc --noEmit`, 0 ошибок | `npm run typecheck` 2026-10-31 |
 | Node на машине | v26.12.1 (engines `>=22`) | `package.json:6` |
 | БД | единственная таблица `rooms` | `server/snapshot.ts:5` |
 
-## Файлы сервера (22 файла, 2855 строк)
+## Файлы сервера (26 файлов, 3514 строк)
 
 | Файл | Строк | Назначение в одну строку |
 |---|---|---|
-| `index.ts` | 109 | env (PORT 3005, BOT_TOKEN, SQLITE_PATH), /health, /dev/token, раздача статики, запуск RoomManager |
-| `room.ts` | 484 | RoomManager: сокеты, лобби, роутинг 17 интентов, таймеры, дисконнекты, сохранение снимков |
+| `index.ts` | 61 | env, периметр (`perimeter`), HTTP-сервер, Socket.IO, `loadPersistedRooms`, TTL-интервал |
+| `http.ts` | 129 | HTTP-периметр: /health, /dev/token (prod → 404), CORS `ALLOWED_ORIGINS`, статика/SPA (ассет с расширением → 404) |
+| `validation.ts` | 118 | граница сокета: `parseEuro`, `normalizeIntent` — деньги строкой/числом → bigint, whitelist полей |
+| `room.ts` | 510 | RoomManager: сокеты, лобби, нормализация + роутинг 17 интентов, таймеры, дисконнекты, снимки, восстановление из SQLite |
 | `types.ts` | 122 | Car/Player/Room/Phase/Intent (17 интентов), константы GARAGE_CAP/MIN/MAX_PLAYERS |
 | `turn.ts` | 250 | RuleError, applyMove, advanceTurn, checkWin, applyAutoTurn, assertIntent, константы таймингов |
 | `actions.ts` | 167 | правила клеток: repair/scrap/buyout/rent/taxi/buy |
@@ -31,17 +35,19 @@
 | `decks.ts` | 291 | каталоги 4 классов, дефекты, перемешивание, recycleDeck, initGame, rollTurnOrder |
 | `money.ts` | 26 | Euro = bigint, константы баланса, add/sub/canPay |
 | `track.ts` | 32 | 9 клеток, TRACK_LEN, stepCost (1-2 бесплатно, 3-4 по 300 €), stepsWalked |
-| `snapshot.ts` | 42 | SQLite: таблица rooms, encode/decode `$euro`, serializeRoom, loadRooms |
+| `snapshot.ts` | 55 | SQLite: WAL + busy_timeout, таблица rooms, encode/decode `$euro`, serializeRoom, loadRooms, cleanupOldRooms (TTL 24 ч) |
 | `auth.ts` | 41 | verifyInitData: HMAC-SHA256 по бот-токену, свежесть 3600 с |
 | `rng.ts` | 17 | d6 через `crypto.randomInt`, shuffle — единственный источник случайности |
 | `actions.test.ts` | 124 | тесты клеток |
 | `auth.test.ts` | 33 | подпись/подделка initData |
+| `http.test.ts` | 141 | периметр: dev-токен, 404 в prod, 404 ассетов, CORS-политика |
 | `mechanics.test.ts` | 296 | тесты аукциона, гонки, займов, ликвидации |
 | `money.test.ts` | 12 | отказ от отрицательного баланса и дробей |
 | `room.test.ts` | 170 | интеграционный: реальные сокеты, лобби → старт → автоход → займ → taxi ack |
-| `snapshot.test.ts` | 34 | bigint-денежный round-trip через SQLite |
+| `snapshot.test.ts` | 128 | round-trip bigint, WAL, TTL, рестарт: восстановление + автоход при просрочке |
 | `track.test.ts` | 22 | состав трека и цены шагов |
-| `turn.test.ts` | 77 | перемещение, чужой ход, rentSteps |
+| `turn.test.ts` | 108 | перемещение, чужой ход, rentSteps, множитель такси в автоходе |
+| `validation.test.ts` | 155 | нормализация строковых денег → bigint, отказ мусора, whitelist |
 
 ## Файлы клиента (24 файла, 2949 строк)
 
@@ -90,8 +96,8 @@
 | `RACE_POOL_TIMEOUT_SEC` | 10 | `server/race.ts:7` |
 | `MAX_MISSED_LAPS` | 3 | `server/turn.ts:51` |
 | initData maxAge | 3600 с | `server/auth.ts:15` |
-| Порт по умолчанию | 3005 | `server/index.ts:15` |
-| SQLITE_PATH по умолчанию | `./tachka.sqlite` | `server/index.ts:17` |
+| Порт по умолчанию | 3005 | `server/index.ts:14` |
+| SQLITE_PATH по умолчанию | `./tachka.sqlite` | `server/index.ts:16` |
 
 ## Схема БД
 
@@ -102,4 +108,4 @@ CREATE TABLE IF NOT EXISTS rooms (
   updated_at INTEGER NOT NULL
 )
 ```
-Источник: `server/snapshot.ts:4-9`. Запись — upsert в `saveRoom` (`server/snapshot.ts:27-32`), вызывается только при смене хода (`server/room.ts:374-377`).
+Источник: `server/snapshot.ts:4-9`. Запись — upsert в `saveRoom` (`server/snapshot.ts:30-35`), вызывается только при смене хода (`server/room.ts:400-403`); чтение при старте — `loadPersistedRooms` (`server/room.ts:45-66`); TTL 24 ч — `cleanupOldRooms` (`server/snapshot.ts:46-55`).

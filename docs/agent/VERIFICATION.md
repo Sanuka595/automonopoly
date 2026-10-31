@@ -12,7 +12,7 @@
 | 3 | `npm run typecheck` | 0 | (вывод пуст — `tsc --noEmit` молчит при отсутствии ошибок) |
 | 4 | `git status --porcelain` | 0 | `?? AGENTS.md`, `?? docs/agent/`, `?? docs/user/` — только разрешённые пути |
 | 5 | `node --experimental-strip-types --test server/track.test.ts` | 0 | `✔ one of each cell (…)`; итог `ℹ pass 3 · ℹ fail 0` |
-| 6 | `PORT=3999 SQLITE_PATH=/tmp/n1-docs.sqlite npm start` | процесс жив | `Server listening on port 3999` (`server/index.ts:108`); после проверки остановлен |
+| 6 | `PORT=3999 SQLITE_PATH=/tmp/n1-docs.sqlite npm start` | процесс жив | `Server listening on port 3999` (`server/index.ts:59-61` на срезе T1-core; при аудите было `:108`); после проверки остановлен |
 | 7 | `curl -s http://127.0.0.1:3999/health` | 0 (HTTP 200) | `{"ok":true,"uptime":1.944622618}` |
 | 8 | `curl -s "http://127.0.0.1:3999/dev/token?id=1&name=Player1"` | 0 | `{"initData":"auth_date=…&user=…&hash=…"}` — в доках заменено на `<INIT_DATA>` |
 | 9 | `node --experimental-strip-types /tmp/tachka-socket-boundary.mts` (офлайн-проба FINDINGS-1/2) | 0 | `BID-STRING: throws -> RuleError "invalid bid step"`; далее `LOAN-ADD-STRINGS: "2000"+"2000" -> "20002000"` и `LOAN-COMPARE: "1000"<"200" -> true` |
